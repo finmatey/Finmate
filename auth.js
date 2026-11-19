@@ -1,7 +1,7 @@
 // auth.js — Cloud authentication & state persistence via Supabase
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const SUPABASE_URL = 'https://bspfsnmvwvywuvdaezyl.supabase.co/rest/v1/';
+const SUPABASE_URL = 'https://bspfsnmvwvywuvdaezyl.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_kVw-7W6li686jrla4EzYsA_xR1gy79B';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
