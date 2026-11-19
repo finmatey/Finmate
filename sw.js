@@ -1,4 +1,4 @@
-const CACHE = 'finmate-v2';
+const CACHE = 'finmate-v3';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './auth.js', './logic.js', './icon.svg', './manifest.json'];
 
 self.addEventListener('install', (e) => {
