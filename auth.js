@@ -91,17 +91,29 @@ export const cloudAuth = {
     if (error) throw new Error(mapAuthError(error.message));
   },
 
-  async loadState(userId, fallbackFn) {
-    const { data, error } = await supabase
-      .from('finmate_states')
-      .select('state, recent')
-      .eq('user_id', userId)
-      .maybeSingle();
+ async loadState(userId, fallbackFn) {
+  const { data, error } = await supabase
+    .from('finmate_states')
+    .select('state, recent')
+    .eq('user_id', userId)
+    .maybeSingle();
 
-    if (error) throw error;
-    if (!data) return { state: fallbackFn(), recent: [] };
-    return { state: data.state, recent: data.recent || [] };
-  },
+  if (error) throw error;
+
+  if (!data) {
+    return {
+      state: fallbackFn(),
+      recent: [],
+      exists: false,
+    };
+  }
+
+  return {
+    state: data.state,
+    recent: data.recent || [],
+    exists: true,
+  };
+},
 
   async saveState(userId, state, recent) {
     const { error } = await supabase

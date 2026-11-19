@@ -10,28 +10,41 @@ let syncTimer = null;
 
 function save() {
   if (!account) return;
-  try {
-    localStorage.setItem(cacheKey(), JSON.stringify({ state, recent: ui.recent }));
-  } catch {
-    toast('Không lưu được bộ nhớ đệm trên trình duyệt.');
-  }
 
   ui.syncStatus = 'syncing';
   clearTimeout(syncTimer);
+
+  const userId = account.id;
+  const snapshot = JSON.parse(JSON.stringify({
+    state,
+    recent: ui.recent,
+  }));
+
   syncTimer = setTimeout(async () => {
     try {
-      await cloudAuth.saveState(account.id, state, ui.recent);
+      await cloudAuth.saveState(
+        userId,
+        snapshot.state,
+        snapshot.recent
+      );
+
+      if (account?.id !== userId) return;
+
       ui.syncStatus = 'synced';
       if (ui.tab === 'settings') render();
+
     } catch (e) {
       console.warn('Cloud sync failed', e);
+
+      if (account?.id !== userId) return;
+
       ui.syncStatus = 'offline';
       if (ui.tab === 'settings') render();
-      toast('Chưa đồng bộ được lên đám mây. Dữ liệu đã lưu tạm trên máy.');
+
+      toast('Không thể đồng bộ. Dữ liệu chưa được lưu lên đám mây.');
     }
   }, 600);
 }
-
 function pushRecent(id) {
   ui.recent = [id, ...ui.recent.filter((x) => x !== id)].slice(0, 6);
   save();
@@ -191,7 +204,7 @@ function settings() {
   const syncLabel = ui.syncStatus === 'syncing'
     ? 'Đang đồng bộ lên đám mây…'
     : ui.syncStatus === 'offline'
-      ? 'Đang ngoại tuyến (đã lưu tạm trên máy)'
+      ? 'Chưa đồng bộ được. Dữ liệu chưa được lưu trên đám mây.'
       : 'Đã đồng bộ lên đám mây';
 
   return `<section class="card"><h2>Tài khoản đám mây</h2>
@@ -395,45 +408,78 @@ function showAuth(mode = 'login') {
 
 async function enter(acc, initialLegacyState = null) {
   account = acc;
-  ui = { tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus: 'syncing' };
+
+  ui = {
+    tab: 'home',
+    plan: 'budget',
+    q: '',
+    month: thisMonth(),
+    recent: [],
+    entered: false,
+    syncStatus: 'syncing',
+  };
 
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey()));
-    if (cached?.state) {
-      state = L.validateImport(cached.state);
-      ui.recent = cached.recent || [];
-    }
-  } catch {}
+    // Keep an existing device cache temporarily for migration.
+    let cached = null;
 
-  authEl.hidden = true;
-  authEl.innerHTML = '';
-  document.body.classList.remove('locked');
-  render();
-  window.scrollTo(0, 0);
+    try {
+      cached = JSON.parse(localStorage.getItem(cacheKey()));
+    } catch {}
 
-  try {
-    if (initialLegacyState) {
-      state = initialLegacyState;
-      await cloudAuth.saveState(acc.id, state, ui.recent);
-      localStorage.removeItem('finmate:v1');
-      localStorage.removeItem('finmate:recent');
-      toast('Đã chuyển dữ liệu lên đám mây');
-    } else {
-      const cloud = await cloudAuth.loadState(acc.id, L.emptyState);
+    // Always check the account's cloud data first.
+    const cloud = await cloudAuth.loadState(acc.id, L.emptyState);
+
+    if (cloud.exists) {
+      // Cloud data always takes priority.
       state = L.validateImport(cloud.state);
       ui.recent = cloud.recent;
-      localStorage.setItem(cacheKey(), JSON.stringify({ state, recent: ui.recent }));
+
+    } else if (initialLegacyState || cached?.state) {
+      // Migrate old device data only if the account has no cloud record.
+      state = L.validateImport(
+        initialLegacyState || cached.state
+      );
+
+      ui.recent = cached?.recent || [];
+
+      await cloudAuth.saveState(acc.id, state, ui.recent);
+
+      toast('Đã chuyển dữ liệu lên đám mây');
+    } else {
+      state = L.emptyState();
+      ui.recent = [];
     }
-    ui.syncStatus = 'synced';
-    render();
-  } catch (e) {
-    console.warn('Initial cloud load failed', e);
-    ui.syncStatus = 'offline';
-    render();
-    toast('Đang dùng dữ liệu ngoại tuyến.');
-  }
+
+    // Remove old device cache only after successful cloud loading/migration.
+    if (!cloud.exists && (initialLegacyState || cached?.state)) {
+  localStorage.removeItem(cacheKey());
 }
 
+if (!cloud.exists && initialLegacyState) {
+  localStorage.removeItem('finmate:v1');
+  localStorage.removeItem('finmate:recent');
+}
+
+    ui.syncStatus = 'synced';
+
+    authEl.hidden = true;
+    authEl.innerHTML = '';
+    document.body.classList.remove('locked');
+
+    render();
+    window.scrollTo(0, 0);
+
+  } catch (e) {
+    console.error('Cloud loading failed:', e);
+
+    account = null;
+    state = L.emptyState();
+
+    toast('Không thể tải dữ liệu từ đám mây. Hãy kiểm tra kết nối và thử lại.');
+    throw e;
+  }
+}
 async function leave() {
   await cloudAuth.logout();
   account = null;
