@@ -1,0 +1,1 @@
+{"name":"finmate","version":"0.2.0","type":"module","scripts":{"dev":"node server.js","start":"node server.js","test":"node --test"},"devDependencies":{"gh-pages":"^6.3.0"}}
