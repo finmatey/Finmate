@@ -1,754 +1,562 @@
-const L = window.FinMateLogic;
+import * as L from './logic.js';
+import { cloudAuth, validateNewAccount, MIN_PASSWORD } from './auth.js';
 
-const STORAGE_KEY = 'finmate:vanilla:v1';
-let state = loadState();
-let ui = {
-  tab: 'home',
-  planTab: 'budget',
-  walletFilter: 'all',
-  boardScope: 'grade',
-  trendRange: 6,
-  query: '',
-  month: L.monthKey(L.todayStr()),
-};
+let account = null, state = L.emptyState();
+const thisMonth = () => L.monthKey(L.todayStr());
+let ui = { tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus: 'synced' };
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.transactions)) return parsed;
-    }
-  } catch {}
-  return L.createSeedState();
-}
+const cacheKey = () => `finmate:cache:${account?.id}`;
+let syncTimer = null;
 
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+  if (!account) return;
+
+  ui.syncStatus = 'syncing';
+  clearTimeout(syncTimer);
+
+  const userId = account.id;
+  const snapshot = JSON.parse(JSON.stringify({
+    state,
+    recent: ui.recent,
+  }));
+
+  syncTimer = setTimeout(async () => {
+    try {
+      await cloudAuth.saveState(
+        userId,
+        snapshot.state,
+        snapshot.recent
+      );
+
+      if (account?.id !== userId) return;
+
+      ui.syncStatus = 'synced';
+      if (ui.tab === 'settings') render();
+
+    } catch (e) {
+      console.warn('Cloud sync failed', e);
+
+      if (account?.id !== userId) return;
+
+      ui.syncStatus = 'offline';
+      if (ui.tab === 'settings') render();
+
+      toast('Không thể đồng bộ. Dữ liệu chưa được lưu lên đám mây.');
+    }
+  }, 600);
+}
+function pushRecent(id) {
+  ui.recent = [id, ...ui.recent.filter((x) => x !== id)].slice(0, 6);
+  save();
 }
 
+/* ---------- helpers ---------- */
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const cat = (id) => state.categories.find((c) => c.id === id) || { id, name: id, icon: '📦', color: '#A9B5AE', type: 'expense' };
-const wallet = (id) => state.wallets.find((w) => w.id === id) || state.wallets[0];
+const FALLBACK = Object.fromEntries(L.DEFAULT_CATEGORIES.map((c) => [c.id, c.color]));
+const cat = (id) => { const c = state.categories.find((x) => x.id === id) || { name: id, icon: '❓' }; return { ...c, color: FALLBACK[id] || c.color || '#A9B5AE' }; };
 const monthLabel = (m) => `Tháng ${Number(m.slice(5))}/${m.slice(0, 4)}`;
-
-function toast(msg, undoFn) {
-  const el = $('#toast');
-  el.innerHTML = `<span>${esc(msg)}</span>${undoFn ? '<button type="button" id="undo-btn">Hoàn tác</button>' : ''}`;
-  el.hidden = false;
-  if (undoFn) {
-    $('#undo-btn').onclick = () => { undoFn(); el.hidden = true; };
-  }
-  clearTimeout(toast.t);
-  toast.t = setTimeout(() => { el.hidden = true; }, undoFn ? 5000 : 2800);
+const vnd = L.formatVND;
+function dayLabel(d) {
+  const t = L.todayStr(), y = new Date(); y.setDate(y.getDate() - 1);
+  if (d === t) return 'Hôm nay'; if (d === L.todayStr(y)) return 'Hôm qua';
+  const [Y, M, D] = d.split('-').map(Number); const w = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][new Date(Y, M - 1, D).getDay()];
+  return `${w}, ${D}/${M}`;
+}
+function toast(msg, action) {
+  const t = $('#toast'); t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button">${esc(action.label)}</button>` : ''}`; t.hidden = false;
+  if (action) t.querySelector('button').onclick = () => { action.run(); t.hidden = true; };
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), action ? 5000 : 2400);
+}
+const meter = (pct, cls = '', color = '') => {
+  const W = 300, p = Math.min(pct, 100), x1 = p > 0 ? Math.max((W * p) / 100, 8) : 0; let d = '';
+  for (let x = 0; x <= x1; x += 2) d += `${x ? 'L' : 'M'}${x.toFixed(1)} ${(8 + 3 * Math.sin((x / W) * 14 * 2 * Math.PI)).toFixed(2)} `;
+  return `<div class="meter ${cls}" style="${color ? `--c:${color}` : ''}" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><svg viewBox="0 0 300 16" preserveAspectRatio="none" aria-hidden="true">${p < 100 ? `<line class="trk" x1="${x1}" y1="8" x2="${W}" y2="8"/>` : ''}${x1 ? `<path class="fill" d="${d}"/>` : ''}</svg></div>`;
+};
+const cookie = (cx, cy, R, n, amp) => { let d = ''; for (let k = 0; k <= 120; k++) { const t = (k / 120) * 2 * Math.PI, r = R + amp * Math.cos(n * t); d += `${k ? 'L' : 'M'}${(cx + r * Math.cos(t)).toFixed(2)} ${(cy + r * Math.sin(t)).toFixed(2)} `; } return d + 'Z'; };
+const txRow = (t) => { const c = cat(t.categoryId); return `<div class="tx"><span class="bubble" style="--c:${c.color}">${c.icon}</span>
+  <div class="grow"><div class="t">${esc(c.name)}</div>${t.note ? `<div class="n">${esc(t.note)}</div>` : ''}</div>
+  <span class="amt num ${t.type === 'income' ? 'in' : ''}">${t.type === 'income' ? '+' : '−'}${vnd(t.amount)}</span>
+  <button class="x" data-act="deltx" data-id="${t.id}" aria-label="Xóa giao dịch">✕</button></div>`; };
+const ART = {
+  coins: ['#F8DCCB', '<circle cx="64" cy="54" r="26" fill="#F7E7A8"/><text x="64" y="64" text-anchor="middle" font-size="26" font-weight="800" fill="#183C35">₫</text><circle cx="110" cy="76" r="16" fill="#E1F5EC"/><circle cx="110" cy="76" r="6" fill="#183C35"/>'],
+  target: ['#E8DDF8', '<circle cx="80" cy="62" r="32" fill="#fff"/><circle cx="80" cy="62" r="22" fill="#E8DDF8"/><circle cx="80" cy="62" r="10" fill="#183C35"/><path d="M80 62l28-28" stroke="#E8C547" stroke-width="5" stroke-linecap="round"/>'],
+  sprout: ['#E1F5EC', '<rect x="57" y="76" width="46" height="26" rx="12" fill="#183C35"/><path d="M80 76V52" stroke="#183C35" stroke-width="5" stroke-linecap="round"/><path d="M80 58c-17 0-23-11-23-23 15 0 23 8 23 23z" fill="#5FBF9A"/><path d="M80 52c13 0 19-9 19-19-13 0-19 7-19 19z" fill="#F7E7A8"/>'],
+};
+const art = (k) => `<svg class="art" viewBox="0 0 160 124" aria-hidden="true"><path d="${cookie(80, 62, 50, 9, 4)}" fill="${ART[k][0]}"/>${ART[k][1]}</svg>`;
+const empty = (kind, title, text, btn) => `<div class="empty">${art(kind)}<b>${title}</b>${text}${btn || ''}</div>`;
+const FLOW = { data: [], x: [] };
+const flowRead = (d) => `<b>${monthLabel(d.month)}</b><span class="k in">Thu ${vnd(d.income)}</span><span class="k out">Chi ${vnd(d.expense)}</span>`;
+function flowChart() {
+  const data = L.monthlyFlow(state.transactions, ui.month, 6), n = data.length; FLOW.data = data;
+  const maxV = Math.max(...data.flatMap((d) => [d.income, d.expense]));
+  if (!maxV) return empty('coins', 'Chưa có dữ liệu dòng tiền', 'Ghi vài giao dịch để xem thu chi thay đổi theo từng tháng.');
+  const W = 320, H = 176, pl = 40, pr = 12, pt = 12, pb = 28, top = L.niceMax(maxV), last = n - 1;
+  const X = (i) => pl + (i * (W - pl - pr)) / (n - 1), Y = (v) => pt + (1 - v / top) * (H - pt - pb); FLOW.x = data.map((_, i) => X(i));
+  const smooth = (vals) => { const p = vals.map((v, i) => [X(i), Y(v)]), cl = (y) => Math.min(H - pb, Math.max(pt, y)); let d = `M${p[0][0].toFixed(1)} ${p[0][1].toFixed(1)}`;
+    for (let i = 0; i < p.length - 1; i++) { const p0 = p[i - 1] || p[i], p1 = p[i], p2 = p[i + 1], p3 = p[i + 2] || p2;
+      d += ` C${(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1)} ${cl(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1)} ${(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1)} ${cl(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`; } return d; };
+  const inc = data.map((d) => d.income), exp = data.map((d) => d.expense), hw = (W - pl - pr) / (n - 1);
+  const grid = [0, top / 2, top].map((v) => `<line class="g" x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${pl - 8}" y="${Y(v) + 3}" text-anchor="end">${v ? L.compactVND(v) : '0'}</text>`).join('');
+  const dots = (vals, cls) => vals.map((v, i) => `<circle class="${cls}${i === last ? ' sel' : ''}" data-dot="${i}" cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="${i === last ? 6 : 4}"/>`).join('');
+  const labels = data.map((d, i) => `<text class="${i === last ? 'sel' : ''}" data-lab="${i}" x="${X(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">T${Number(d.month.slice(5))}</text>`).join('');
+  const hits = data.map((_, i) => `<rect data-hit="${i}" x="${(X(i) - hw / 2).toFixed(1)}" y="0" width="${hw.toFixed(1)}" height="${H - pb}"/>`).join('');
+  return `<div class="flow-card" id="flow"><div class="flow-read" id="flowread" aria-live="polite">${flowRead(data[last])}</div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Biểu đồ thu và chi 6 tháng gần nhất">${grid}
+      <path class="area" d="${smooth(inc)} L${X(last).toFixed(1)} ${H - pb} L${X(0).toFixed(1)} ${H - pb} Z"/>
+      <line class="guide" x1="${X(last).toFixed(1)}" x2="${X(last).toFixed(1)}" y1="${pt}" y2="${H - pb}"/>
+      <path class="ln out" d="${smooth(exp)}"/><path class="ln in" d="${smooth(inc)}"/>${dots(exp, 'out')}${dots(inc, 'in')}${labels}${hits}</svg></div>`;
+}
+function setFlow(i) {
+  const d = FLOW.data[i], root = $('#flow'); if (!d || !root) return;
+  $('#flowread').innerHTML = flowRead(d);
+  const g = root.querySelector('.guide'); g.setAttribute('x1', FLOW.x[i].toFixed(1)); g.setAttribute('x2', FLOW.x[i].toFixed(1));
+  root.querySelectorAll('[data-dot]').forEach((c) => { const on = Number(c.dataset.dot) === i; c.classList.toggle('sel', on); c.setAttribute('r', on ? 6 : 4); });
+  root.querySelectorAll('[data-lab]').forEach((c) => c.classList.toggle('sel', Number(c.dataset.lab) === i));
+}
+function donut(entries, total) {
+  const R = 46, C = 2 * Math.PI * R, gap = entries.length > 1 ? 6 : 0; let start = 0;
+  const segs = entries.map(([id, v]) => { const len = Math.max((v / total) * C - gap, 2); const el = `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${cat(id).color}" stroke-width="16" stroke-linecap="round" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-start}"/>`; start += (v / total) * C; return el; }).join('');
+  return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="Biểu đồ chi tiêu theo danh mục"><g transform="rotate(-90 60 60)"><circle cx="60" cy="60" r="${R}" fill="none" stroke="#E1F5EC" stroke-width="16"/>${segs}</g>
+    <text x="60" y="58" text-anchor="middle" font-size="19" font-weight="800">${L.compactVND(total)}</text><text x="60" y="73" text-anchor="middle" font-size="9" font-weight="600" style="fill:#777E79">đã chi</text></svg>`;
 }
 
-function downloadFile(name, content, type) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([content], { type }));
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
-function donutSVG(entries, total) {
-  const R = 46, C = 2 * Math.PI * R, gap = entries.length > 1 ? 5 : 0;
-  let off = 0;
-  const segs = entries.map(([id, v]) => {
-    const slice = total > 0 ? (v / total) * C : 0;
-    const len = Math.max(slice - gap, 2);
-    const cur = off;
-    off += slice;
-    return `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${cat(id).color}" stroke-width="15" stroke-linecap="round" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-cur}"/>`;
-  }).join('');
-  return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="Cơ cấu chi tiêu"><g transform="rotate(-90 60 60)"><circle cx="60" cy="60" r="${R}" fill="none" stroke="var(--mint)" stroke-width="15"/>${segs}</g><text x="60" y="57" text-anchor="middle" font-size="16" font-weight="800" fill="var(--ink)">${L.compactVND(total)}</text><text x="60" y="72" text-anchor="middle" font-size="9" font-weight="600" fill="var(--mute)">đã chi</text></svg>`;
-}
-
-function flowSVG(data) {
-  const maxV = Math.max(...data.flatMap((d) => [d.income, d.expense]), 0);
-  if (!maxV) return '<p class="mute">Chưa có dữ liệu dòng tiền.</p>';
-  const W = 420, H = 180, pl = 40, pr = 12, pt = 14, pb = 26, top = L.niceMax(maxV), n = data.length;
-  const X = (i) => (n <= 1 ? pl : pl + (i * (W - pl - pr)) / (n - 1));
-  const Y = (v) => pt + (1 - v / top) * (H - pt - pb);
-  const path = (vals) => vals.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ');
-  const grid = [0, top / 2, top].map((v) => `<line x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pl - 6}" y="${Y(v) + 3}" text-anchor="end" font-size="10" fill="var(--mute)">${v ? L.compactVND(v) : '0'}</text>`).join('');
-  const labels = data.map((d, i) => `<text x="${X(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--mute)">T${Number(d.month.slice(5))}</text>`).join('');
-  const last = data[data.length - 1];
-  return `<div style="display:flex;justify-content:space-between;margin:8px 0;font-size:.8rem;font-weight:800"><span>${monthLabel(last.month)}</span><span class="num"><span style="color:var(--ok)">Thu ${L.formatVND(last.income)}</span> · <span style="color:#C77446">Chi ${L.formatVND(last.expense)}</span></span></div>
-  <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;overflow:visible">${grid}<path d="${path(data.map((d) => d.expense))}" fill="none" stroke="#EE9B6E" stroke-width="3" stroke-linecap="round"/><path d="${path(data.map((d) => d.income))}" fill="none" stroke="var(--ok)" stroke-width="3" stroke-linecap="round"/>${labels}</svg>`;
-}
-
-function screenHome() {
+/* ---------- screens ---------- */
+function home() {
   const today = L.todayStr(), s = L.summarize(state.transactions, ui.month);
   const overall = state.budgets.find((b) => b.categoryId === null);
   const al = overall ? L.dailyAllowance(overall.limit, s.expense, ui.month, today) : null;
-  const rem = overall ? overall.limit - s.expense : s.balance;
-  const over = overall ? rem < 0 : false;
-  const daily = L.dailySpend(state.transactions, ui.month), maxD = Math.max(...daily, 1);
-  const todayDay = ui.month === L.monthKey(today) ? Number(today.slice(8, 10)) : 0;
-  const bars = daily.map((v, i) => {
-    const d = i + 1;
-    const h = v ? Math.max(12, Math.round((v / maxD) * 100)) : 8;
-    return `<i class="${d === todayDay ? 'today' : v ? '' : 'zero'}" style="height:${h}%" title="Ngày ${d}: ${L.formatVND(v)}"></i>`;
-  }).join('');
-  const insights = L.generateAIInsights(state.transactions, state.categories, state.budgets, ui.month, today);
+  let label, num, numCls = '', sub, sub2 = '';
+  if (overall) {
+    const remaining = overall.limit - s.expense, over = remaining < 0;
+    label = over ? 'Bạn đã vượt ngân sách' : 'Ngân sách còn lại'; num = (over ? '−' : '') + vnd(Math.abs(remaining)); numCls = over ? 'over' : '';
+    sub = `Ngân sách bạn đặt: ${vnd(overall.limit)}`;
+    if (al && !over) sub2 = `Khoảng ${vnd(al.perDay)} mỗi ngày · còn ${al.daysLeft} ngày`;
+  } else { label = 'Số dư ' + monthLabel(ui.month).toLowerCase(); num = vnd(s.balance); sub = 'Đặt ngân sách để biết bạn còn bao nhiêu tiền để tiêu.'; }
+  const daily = L.dailySpend(state.transactions, ui.month), max = Math.max(...daily, 1), n = daily.length;
+  const todayDay = ui.month === thisMonth() ? Number(today.slice(8)) : ui.month < thisMonth() ? n + 1 : 0;
+  const strip = daily.map((v, i) => { const d = i + 1; const cls = [d === todayDay ? 'today' : '', d > todayDay ? 'future' : '', v ? '' : 'zero'].join(' ');
+    return `<i class="${cls}" style="--h:${v ? Math.max(10, Math.round((v / max) * 100)) : 0}%;--i:${i}" title="Ngày ${d}: ${vnd(v)}"></i>`; }).join('');
   const cats = Object.entries(s.byCategory).sort((a, b) => b[1] - a[1]);
-  const recent = state.transactions.filter((t) => L.monthKey(t.date) === ui.month).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
-  const checkedIn = state.lastCheckInDate === today;
-
-  return `
-  <div class="grid-home-top">
-    <section class="hero">
-      <div>
-        <div class="hero-top">
-          <div>
-            <span class="mute" style="font-weight:700">${overall ? (over ? 'Bạn đã vượt ngân sách' : 'Ngân sách còn lại') : 'Số dư tháng'}</span>
-            <p class="hero-num num ${over ? 'over' : ''}">${over ? '−' : ''}${L.formatVND(Math.abs(rem))}</p>
-            <p class="mute" style="margin:0;font-weight:600">${overall ? `Hạn mức ${L.formatVND(overall.limit)}${al && !over ? ` · Khoảng ${L.formatVND(al.perDay)}/ngày · còn ${al.daysLeft} ngày` : ''}` : 'Đặt ngân sách để tính hạn mức mỗi ngày.'}</p>
-          </div>
-          ${al ? `<div class="days-badge num"><span style="font-size:1.1rem">${al.daysLeft}</span><span style="font-size:10px">ngày</span></div>` : ''}
-        </div>
-        <div class="strip">${bars}</div>
-        <div class="axis num"><span>Ngày 1</span><span>Ngày ${Math.ceil(daily.length / 2)}</span><span>Ngày ${daily.length}</span></div>
-      </div>
-      <div class="hero-actions">
-        <button type="button" class="btn primary" data-act="add">+ Thêm chi tiêu</button>
-        <button type="button" class="btn" data-act="addbudget">${overall ? 'Sửa ngân sách' : 'Đặt ngân sách'}</button>
-      </div>
-    </section>
-
-    <div style="display:flex;flex-direction:column;gap:12px;justify-content:space-between">
-      <div class="stats-pair">
-        <div class="stat-box exp"><small>Đã chi</small><b class="num">${L.formatVND(s.expense)}</b></div>
-        <div class="stat-box inc"><small>Đã thu</small><b class="num">${L.formatVND(s.income)}</b></div>
-      </div>
-
-      <div class="card" style="padding:16px;display:flex;align-items:center;justify-content:space-between;gap:10px">
-        <div>
-          <p class="mute" style="margin:0">Chuỗi ghi chép · ${state.finPoints} FinPoints</p>
-          <p style="margin:2px 0 0;font-weight:800">🔥 ${state.streakDays} ngày liên tục</p>
-        </div>
-        <button type="button" class="btn sm ${checkedIn ? 'tonal' : 'primary'}" data-act="${checkedIn ? 'gorewards' : 'checkin'}">${checkedIn ? 'Đổi quà' : 'Điểm danh +15đ'}</button>
-      </div>
-
-      <div class="card" style="padding:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <h2 style="font-size:.92rem">Thêm nhanh</h2><span class="mute">1 chạm</span>
-        </div>
-        <div class="quick-grid">
-          ${state.categories.filter((c) => c.type === 'expense').slice(0, 5).map((c) => `<button type="button" class="quick-btn" data-act="addcat" data-id="${c.id}"><span class="quick-ico" style="background:${c.color}28">${c.icon}</span><small>${esc(c.name.split(' ')[0])}</small></button>`).join('')}
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <section class="card" style="margin-top:18px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <div><h2 style="font-size:1rem">✨ Trợ lý AI Insights</h2><p class="mute" style="margin:2px 0 0">Phân tích tự động từ dữ liệu giao dịch của bạn</p></div>
-      <button type="button" class="btn sm tonal" data-tab="assistant">Hỏi Trợ lý AI ›</button>
-    </div>
-    <div class="grid-3">
-      ${insights.slice(0, 3).map((ins) => `<div class="insight-card ${ins.tone}"><b>${esc(ins.title)}</b><span>${esc(ins.message)}</span></div>`).join('')}
-    </div>
-  </section>
-
-  <div class="grid-2">
-    <section class="card">
-      <h2 style="font-size:1rem">Tiền đã đi đâu</h2>
-      ${cats.length ? `<div class="donut-wrap">${donutSVG(cats, s.expense)}<ul class="legend">${cats.map(([id, v]) => `<li><span><i class="dot" style="background:${cat(id).color}"></i>${cat(id).icon} ${esc(cat(id).name)}</span><b class="num">${L.formatVND(v)} · ${Math.round((v / s.expense) * 100)}%</b></li>`).join('')}</ul></div>` : '<p class="mute">Chưa có chi tiêu tháng này.</p>'}
-    </section>
-    <section class="card">
-      <h2 style="font-size:1rem">Dòng tiền 6 tháng gần nhất</h2>
-      ${flowSVG(L.monthlyFlow(state.transactions, ui.month, 6))}
-    </section>
-  </div>
-
-  <div class="grid-2">
-    <section class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <h2 style="font-size:1rem">Hũ tiết kiệm</h2>
-        <button type="button" class="btn sm tonal" data-act="gojars">Quản lý hũ</button>
-      </div>
-      ${state.jars.map((j) => {
-        const pct = L.goalPct(j);
-        return `<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:.85rem;font-weight:700"><span>${j.icon} ${esc(j.name)}</span><span class="num">${pct}%</span></div><div class="meter"><i style="width:${pct}%"></i></div><div class="mute num" style="display:flex;justify-content:space-between"><span>${L.compactVND(L.goalSaved(j))} / ${L.compactVND(j.target)}</span><span>${j.autoAllocatePct ? `Tự trích ${j.autoAllocatePct}%` : 'Thủ công'}</span></div></div>`;
-      }).join('')}
-    </section>
-
-    <section class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <h2 style="font-size:1rem">Giao dịch gần đây</h2>
-        <button type="button" class="btn sm tonal" data-tab="tx">Xem tất cả</button>
-      </div>
-      <div class="list-box" style="border:0">
-        ${recent.map((t) => `<div class="tx-item" style="padding:10px 2px"><span class="bubble" style="background:${cat(t.categoryId).color}28">${cat(t.categoryId).icon}</span><div class="grow"><div style="font-weight:700;font-size:.86rem">${esc(cat(t.categoryId).name)}</div><div class="mute ellipsis">${esc(t.note || 'Không ghi chú')} · ${esc(wallet(t.walletId).shortName)}</div></div><b class="num" style="color:${t.type === 'income' ? 'var(--ok)' : 'var(--ink)'}">${t.type === 'income' ? '+' : '−'}${L.formatVND(t.amount)}</b><button type="button" class="icon-x" data-act="deltx" data-id="${t.id}" aria-label="Xóa giao dịch ${esc(cat(t.categoryId).name)} ${L.formatVND(t.amount)}">✕</button></div>`).join('')}
-      </div>
-    </section>
-  </div>`;
+  const recent = state.transactions.filter((t) => L.monthKey(t.date) === ui.month).sort((a, b) => b.date.localeCompare(a.date) || (b.id > a.id ? 1 : -1)).slice(0, 4);
+  const arrow = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
+  const daysLeftBadge = ui.month === thisMonth() ? n - Number(today.slice(8)) + 1 : 0;
+  const badge = daysLeftBadge ? `<svg class="badge" viewBox="0 0 100 100" role="img" aria-label="Còn ${daysLeftBadge} ngày trong tháng"><path d="${cookie(50, 50, 42, 10, 4)}" fill="#F7E7A8"/><text x="50" y="55" text-anchor="middle" font-size="30" font-weight="800" fill="#183C35">${daysLeftBadge}</text><text x="50" y="71" text-anchor="middle" font-size="11" font-weight="700" fill="#183C35">ngày</text></svg>` : '';
+  const quickIds = [...ui.recent.filter((id) => cat(id).type === 'expense'), ...state.categories.filter((c) => c.type === 'expense').map((c) => c.id)].filter((id, i, arr) => arr.indexOf(id) === i && state.categories.some((c) => c.id === id)).slice(0, 5);
+  const tints = ['var(--peach)', 'var(--tertiary)', 'var(--lavender)', 'var(--secondary)', 'var(--peach)'];
+  const quick = `<section class="sec"><div class="sec-head"><h2>Thêm nhanh</h2></div><div class="quick">${quickIds.map((id, i) => `<button class="q" data-act="addcat" data-id="${id}"><span class="qc" style="--t:${tints[i]}">${cat(id).icon}</span><small>${esc(cat(id).name)}</small></button>`).join('')}</div></section>`;
+  const html = `<section class="hero" aria-label="Tóm tắt tháng">${badge}
+    <p class="hero-label">${label}</p><p class="hero-num num ${numCls}">${num}</p><div class="hero-subs"><p class="hero-sub">${sub}</p>${sub2 ? `<p class="hero-sub2">${sub2}</p>` : ''}</div>
+    <div class="strip ${ui.entered ? '' : 'enter'}" role="img" aria-label="Chi tiêu từng ngày trong tháng">${strip}</div>
+    <div class="axis"><span>1</span><span>${Math.ceil(n / 2)}</span><span>${n}</span></div>
+    <div class="hero-actions"><button class="btn primary" data-act="add">Thêm chi tiêu</button><button class="btn tonal" data-act="${overall ? 'editbudget' : 'addbudget'}"${overall ? ` data-id="${overall.id}"` : ''}>${overall ? 'Sửa ngân sách' : 'Đặt ngân sách'}</button></div></section>
+  <section class="stats" aria-label="Thu và chi trong tháng">
+    <div class="stat a" style="--bg-c:var(--peach)"><span class="ico">${arrow('M7 17L17 7M9 7h8v8')}</span><small>Đã chi</small><b class="num">${vnd(s.expense)}</b></div>
+    <div class="stat b" style="--bg-c:var(--tertiary)"><span class="ico">${arrow('M17 7L7 17M15 17H7V9')}</span><small>Đã thu</small><b class="num">${vnd(s.income)}</b></div></section>
+  ${quick}
+  <section class="sec"><div class="sec-head"><h2>Tiền đã đi đâu</h2></div>
+    ${cats.length ? `<div class="donut-card">${donut(cats, s.expense)}<ul class="legend">${cats.map(([id, v]) => `<li><span class="dot" style="--c:${cat(id).color}"></span><div><b>${cat(id).icon} ${esc(cat(id).name)}</b><small class="num">${v >= 1_000_000 ? L.compactVND(v) : vnd(v)} · ${v / s.expense > 0 && Math.round((v / s.expense) * 100) === 0 ? '&lt;1' : Math.round((v / s.expense) * 100)}%</small></div></li>`).join('')}</ul></div>`
+      : empty('coins', 'Chưa có khoản chi nào', 'Bấm Thêm để ghi khoản chi đầu tiên của tháng.')}</section>
+  <section class="sec"><div class="sec-head"><h2>Dòng tiền 6 tháng</h2></div>${flowChart()}</section>
+  <section class="sec"><div class="sec-head"><h2>Gần đây</h2>${recent.length ? '<button class="linkbtn" data-tab-go="tx">Xem tất cả</button>' : ''}</div>
+    ${recent.length ? `<div class="list">${recent.map((t) => txRow(t)).join('')}</div>` : ''}</section>`;
+  ui.entered = true; return html;
 }
 
-function screenTx() {
-  const balances = L.computeWalletBalances(state.wallets, state.transactions);
-  const total = Object.values(balances).reduce((a, b) => a + b, 0);
-  const q = ui.query.trim();
-  const list = state.transactions
-    .filter((t) => (ui.walletFilter === 'all' || t.walletId === ui.walletFilter) && (q ? L.matchTx(t, q, cat(t.categoryId).name) : L.monthKey(t.date) === ui.month))
-    .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
-
-  return `
-  <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
-    <div><h2 style="margin:0;font-size:1.05rem">Đa ví · Tổng tài sản <span class="num">${L.formatVND(total)}</span></h2><p class="mute" style="margin:2px 0 0">Bấm vào từng ví để lọc giao dịch</p></div>
-    <div style="display:flex;gap:8px"><button type="button" class="btn sm" data-act="transfer">⇄ Chuyển ví</button><button type="button" class="btn sm" data-act="exportcsv">↓ Xuất CSV</button></div>
-  </div>
-  <div class="grid-wallets">
-    <button type="button" class="wallet-card" aria-pressed="${ui.walletFilter === 'all'}" data-wallet="all"><small>Tất cả ví</small><b class="num">${L.formatVND(total)}</b></button>
-    ${state.wallets.map((w) => `<button type="button" class="wallet-card" aria-pressed="${ui.walletFilter === w.id}" data-wallet="${w.id}"><small>${w.icon} ${esc(w.name)}</small><b class="num">${L.formatVND(balances[w.id] || 0)}</b></button>`).join('')}
-  </div>
-
-  <div style="display:flex;gap:10px;margin:16px 0">
-    <input id="q" type="search" value="${esc(ui.query)}" placeholder="Tìm giao dịch (VD: tra sua, photo)..." aria-label="Tìm giao dịch" />
-    <button type="button" class="btn primary" data-act="add">+ Ghi giao dịch</button>
-  </div>
-
-  <div class="list-box">
-    ${list.length ? list.map((t) => `<div class="tx-item"><span class="bubble" style="background:${cat(t.categoryId).color}28">${cat(t.categoryId).icon}</span><div class="grow"><div style="font-weight:700">${esc(cat(t.categoryId).name)}</div><div class="mute ellipsis">${esc(t.note || 'Không ghi chú')} · ${esc(wallet(t.walletId).name)} · ${t.date.split('-').reverse().join('/')}</div></div><b class="num" style="color:${t.type === 'income' ? 'var(--ok)' : 'var(--ink)'}">${t.type === 'income' ? '+' : '−'}${L.formatVND(t.amount)}</b><button type="button" class="icon-x" data-act="deltx" data-id="${t.id}" aria-label="Xóa giao dịch ${esc(cat(t.categoryId).name)} ${L.formatVND(t.amount)}">✕</button></div>`).join('') : '<p class="mute" style="padding:28px;text-align:center">Không có giao dịch nào.</p>'}
-  </div>`;
+function txListHtml() {
+  const q = ui.q.trim();
+  const list = state.transactions.filter((t) => (q ? L.matchTx(t, q, cat(t.categoryId).name) : L.monthKey(t.date) === ui.month)).sort((a, b) => b.date.localeCompare(a.date) || (b.id > a.id ? 1 : -1));
+  if (!list.length) return q ? empty('coins', 'Không tìm thấy giao dịch', `Không có kết quả cho "${esc(q)}". Thử từ khóa khác.`)
+    : empty('coins', 'Chưa có giao dịch trong tháng này', 'Mỗi khoản thu chi bạn ghi sẽ hiện ở đây.', '<br><button class="btn primary" data-act="add">Thêm giao dịch</button>');
+  const groups = {}; for (const t of list) (groups[t.date] ||= []).push(t);
+  return `<div class="list">${Object.entries(groups).map(([d, items]) => {
+    const net = items.reduce((a, t) => a + (t.type === 'income' ? t.amount : -t.amount), 0);
+    return `<div class="day"><span>${q ? d.split('-').reverse().join('/') : dayLabel(d)}</span><span class="num">${net > 0 ? '+' : net < 0 ? '−' : ''}${vnd(Math.abs(net))}</span></div>${items.map(txRow).join('')}`; }).join('')}</div>`;
+}
+function txs() {
+  return `<div class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><input id="q" type="search" value="${esc(ui.q)}" placeholder="Tìm theo ghi chú hoặc danh mục" aria-label="Tìm giao dịch" autocomplete="off"></div>
+    <p class="hint" id="qhint">${ui.q.trim() ? 'Đang tìm trong tất cả các tháng.' : ''}</p><div id="txlist">${txListHtml()}</div>`;
 }
 
-function screenPlan() {
-  const seg = `<div class="seg" role="tablist"><button type="button" role="tab" aria-selected="${ui.planTab === 'budget'}" data-plantab="budget">Ngân sách</button><button type="button" role="tab" aria-selected="${ui.planTab === 'jars'}" data-plantab="jars">Hũ tiết kiệm</button><button type="button" role="tab" aria-selected="${ui.planTab === 'debts'}" data-plantab="debts">Sổ nợ bạn bè</button></div>`;
-
-  if (ui.planTab === 'budget') {
+function plan() {
+  const seg = `<div class="seg" role="group" aria-label="Chọn kế hoạch"><button aria-pressed="${ui.plan === 'budget'}" data-plan="budget">Ngân sách</button><button aria-pressed="${ui.plan === 'goals'}" data-plan="goals">Mục tiêu tiết kiệm</button></div>`;
+  if (ui.plan === 'budget') {
     const st = L.budgetStatus(state.budgets, state.transactions, ui.month);
-    const inc = L.summarize(state.transactions, ui.month).income || 1_800_000;
-    const plan = L.generateAutoBudgetPlan(inc);
-    return seg + `<div class="grid-2">
-      <div style="display:grid;gap:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center"><h2 style="font-size:1rem">Hạn mức ${monthLabel(ui.month)}</h2><button type="button" class="btn sm primary" data-act="addbudget">+ Đặt ngân sách</button></div>
-        ${st.map((b) => {
-          const c = b.categoryId ? cat(b.categoryId) : { icon: '💰', name: 'Tổng chi tiêu tháng' };
-          return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>${c.icon} ${esc(c.name)}</b><button type="button" class="icon-x" data-act="delbudget" data-id="${b.id}" aria-label="Xóa ngân sách ${esc(c.name)}">✕</button></div><div class="meter ${b.over ? 'over' : b.warn ? 'warn' : ''}"><i style="width:${Math.min(100, b.pct)}%"></i></div><div class="mute num" style="display:flex;justify-content:space-between"><span>Đã dùng ${L.formatVND(b.spent)} (${b.pct}%)</span><b style="color:${b.over ? 'var(--err)' : 'var(--ok)'}">${b.over ? 'Vượt ' + L.formatVND(-b.remaining) : 'Còn ' + L.formatVND(b.remaining)}</b></div></div>`;
-        }).join('')}
-      </div>
-      <div class="card" style="background:var(--mint)">
-        <h3 style="font-size:.95rem">✨ Chia ngân sách tự động (AI)</h3>
-        <p class="mute" style="margin:4px 0 12px">Thu nhập cơ sở: <b class="num">${L.formatVND(inc)}</b> · Tiết kiệm 20% (<b class="num">${L.formatVND(plan.savingSuggestion)}</b>)</p>
-        ${plan.allocations.map((a) => `<div style="display:flex;justify-content:space-between;font-size:.82rem;padding:4px 0"><span>${a.name} (${a.pct}%)</span><b class="num">${L.formatVND(a.limit)}</b></div>`).join('')}
-        <button type="button" class="btn primary block" data-act="applyautobudget" data-id="${inc}">Áp dụng kế hoạch AI</button>
-      </div>
-    </div>`;
+    return seg + `<p class="hint" style="margin:12px 2px">Ngân sách áp dụng cho mọi tháng. Số liệu bên dưới là của ${monthLabel(ui.month).toLowerCase()}.</p>` +
+      (st.length ? st.map((b) => { const c = b.categoryId ? cat(b.categoryId) : { icon: '💰', name: 'Tổng chi tiêu', color: '#5FBF9A' };
+        return `<article class="card plan"><div class="plan-top"><span class="bubble" style="--c:${c.color}">${c.icon}</span><div class="grow"><b>${esc(c.name)}</b><div class="mute" style="color:var(--mute);font-size:.85rem">Hạn mức ${vnd(b.limit)}</div></div>
+          <button class="x" data-act="editbudget" data-id="${b.id}" aria-label="Sửa hạn mức">✎</button><button class="x" data-act="delbudget" data-id="${b.id}" aria-label="Xóa ngân sách">✕</button></div>
+          ${meter(b.pct, b.over ? 'over' : b.warn ? 'warn' : '', b.categoryId ? c.color : '')}
+          <div class="plan-foot num"><span>Đã dùng ${vnd(b.spent)} (${b.pct}%)</span><span class="${b.over ? 'bad' : ''}">${b.over ? 'Vượt ' + vnd(-b.remaining) : 'Còn ' + vnd(b.remaining)}</span></div></article>`; }).join('')
+        : `<div class="list" style="margin-top:12px">${empty('sprout', 'Chưa có ngân sách', 'Đặt một tổng ngân sách để màn hình Hôm nay cho bạn biết mỗi ngày tiêu được bao nhiêu.')}</div>`) +
+      '<button class="btn primary block" data-act="addbudget">Đặt ngân sách</button>';
   }
-
-  if (ui.planTab === 'jars') {
-    return seg + `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div><h2 style="font-size:1rem;margin:0">Hũ tiết kiệm</h2><p class="mute" style="margin:2px 0 0">Tự động trích % từ thu nhập mới</p></div><button type="button" class="btn sm primary" data-act="addjar">+ Tạo hũ</button></div>
-    <div class="grid-2">${state.jars.map((j) => {
-      const pct = L.goalPct(j);
-      return `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><b>${j.icon} ${esc(j.name)}</b><span class="num" style="font-weight:800;font-size:1.1rem;color:var(--primary)">${pct}%</span></div><div class="meter"><i style="width:${pct}%"></i></div><div class="mute num" style="display:flex;justify-content:space-between;margin-bottom:12px"><span>${L.formatVND(L.goalSaved(j))} / ${L.formatVND(j.target)}</span><span>Tự trích ${j.autoAllocatePct}%</span></div><div style="display:flex;gap:8px"><button type="button" class="btn sm tonal" data-act="jar100" data-id="${j.id}">+100k</button><button type="button" class="btn sm primary" data-act="jar250" data-id="${j.id}">+250k</button><button type="button" class="btn sm" data-act="deljar" data-id="${j.id}" aria-label="Xóa hũ ${esc(j.name)}">Xóa</button></div></div>`;
-    }).join('')}</div>`;
-  }
-
-  const dt = L.computeDebtTotals(state.debts);
-  return seg + `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 style="font-size:1rem;margin:0">Sổ nợ bạn bè</h2><button type="button" class="btn sm primary" data-act="adddebt">+ Ghi khoản nợ</button></div>
-  <div class="grid-3" style="margin-bottom:14px"><div class="card" style="background:var(--mint)"><small class="mute">Cho vay</small><div class="num" style="font-weight:800;font-size:1.15rem">${L.formatVND(dt.receivable)}</div></div><div class="card" style="background:var(--peach)"><small class="mute">Đang vay</small><div class="num" style="font-weight:800;font-size:1.15rem">${L.formatVND(dt.payable)}</div></div><div class="card"><small class="mute">Ròng</small><div class="num" style="font-weight:800;font-size:1.15rem">${L.formatVND(dt.net)}</div></div></div>
-  <div class="list-box">${state.debts.map((d) => `<div class="tx-item"><div class="grow"><b>${d.direction === 'lend' ? `Cho ${esc(d.personName)} vay` : `Mình vay ${esc(d.personName)}`}</b><div class="mute">${esc(d.note)} · Lớp ${esc(d.className || '')}</div></div><b class="num" style="color:${d.direction === 'lend' ? 'var(--ok)' : 'var(--err)'}">${L.formatVND(d.amount)}</b>${d.settled ? '<span class="mute">Đã tất toán</span>' : `<button type="button" class="btn sm tonal" data-act="settledebt" data-id="${d.id}">Tất toán</button>`}</div>`).join('')}</div>`;
+  return seg + (state.goals.length ? state.goals.map((g) => { const pct = L.goalPct(g);
+    return `<article class="card plan"><div class="plan-top"><span class="bubble" style="--c:#E8C547">🎯</span><div class="grow"><b>${esc(g.name)}</b>${g.deadline ? `<div style="color:var(--mute);font-size:.85rem">Hạn ${g.deadline.split('-').reverse().join('/')}</div>` : ''}</div>
+      <span class="big num">${pct}%</span><button class="x" data-act="delgoal" data-id="${g.id}" aria-label="Xóa mục tiêu">✕</button></div>
+      ${meter(pct, '', '')}<div class="plan-foot num"><span>${vnd(L.goalSaved(g))} / ${vnd(g.target)}</span><span>${pct >= 100 ? 'Đã đạt mục tiêu 🎉' : 'Còn ' + vnd(g.target - L.goalSaved(g))}</span></div>
+      <div class="row-actions" style="margin:0"><button class="btn" data-act="contrib" data-id="${g.id}">Góp tiền</button><button class="btn" data-act="contrib250" data-id="${g.id}">+250k</button></div></article>`; }).join('')
+    : `<div class="list" style="margin-top:12px">${empty('target', 'Chưa có mục tiêu', 'Đặt một món bạn muốn mua hoặc một khoản muốn dành dụm, rồi góp dần.')}</div>`) +
+    '<button class="btn primary block" data-act="addgoal">Tạo mục tiêu</button>';
 }
 
-function currentWeekKey(today) {
-  const [y, m, d] = today.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  const start = new Date(y, 0, 1);
-  const wk = Math.ceil(((dt - start) / 86400000 + start.getDay() + 1) / 7);
-  return `${y}-W${String(wk).padStart(2, '0')}`;
-}
+function settings() {
+  const syncLabel = ui.syncStatus === 'syncing'
+    ? 'Đang đồng bộ lên đám mây…'
+    : ui.syncStatus === 'offline'
+      ? 'Chưa đồng bộ được. Dữ liệu chưa được lưu trên đám mây.'
+      : 'Đã đồng bộ lên đám mây';
 
-function screenRewards() {
-  const today = L.todayStr(), s = L.summarize(state.transactions, ui.month);
-  const checkedIn = state.lastCheckInDate === today;
-  const overall = state.budgets.find((b) => b.categoryId === null);
-  const underBudget = !overall || s.expense <= overall.limit;
-  const wkKey = currentWeekKey(today);
-  const weekClaimed = state.weeklyBudgetBonusClaimedWeek === wkKey;
-  const saved = Math.max(0, s.balance);
-  const rate = s.income > 0 ? Math.round((saved / s.income) * 100) : 0;
-  const board = L.rankLeaderboard(L.LEADERBOARD_PEERS, { ...state.profile, savedThisMonth: saved, savingsRatePct: rate, streakDays: state.streakDays }, ui.boardScope);
-
-  return `
-  <div class="grid-2" style="margin-top:0">
-    <section class="reward-banner">
-      <small style="opacity:.8">Điểm thưởng tích lũy</small>
-      <div class="num" style="font-size:2.4rem;font-weight:800;color:#F7E7A8">${state.finPoints} <span style="font-size:1rem;color:#fff">FinPoints</span></div>
-      <p style="margin:6px 0 0;font-size:.85rem">Chuỗi ${state.streakDays} ngày · Đổi voucher quanh ${esc(state.profile.school)}</p>
-      <div class="streak-row">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<div class="streak-pill ${n <= state.streakDays ? 'on' : ''}">N${n}</div>`).join('')}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        <button type="button" class="btn" style="background:#F7E7A8;color:#183C35;border:0" ${checkedIn ? 'disabled' : ''} data-act="checkin">${checkedIn ? 'Đã điểm danh hôm nay' : 'Điểm danh +15 FinPoints'}</button>
-        <button type="button" class="btn" style="background:rgba(255,255,255,0.14);color:#fff;border:1px solid rgba(255,255,255,0.28)" ${weekClaimed || !underBudget ? 'disabled' : ''} data-act="claimweek">${weekClaimed ? 'Đã nhận thưởng tuần' : underBudget ? 'Thưởng giữ ngân sách +50đ' : 'Đang vượt ngân sách'}</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2 style="font-size:1rem;margin-bottom:8px">Lịch sử FinPoints</h2>
-      ${state.pointHistory.slice(0, 5).map((p) => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:.82rem"><span>${esc(p.title)}</span><b class="num" style="color:${p.points >= 0 ? 'var(--ok)' : 'var(--err)'}">${p.points >= 0 ? '+' : ''}${p.points}đ</b></div>`).join('')}
-    </section>
-  </div>
-
-  <h2 style="margin:22px 0 10px;font-size:1.05rem">Đối tác quanh trường Mạc Đĩnh Chi</h2>
-  <div class="grid-2" style="margin-top:0">
-    ${L.MAC_DINH_CHI_VOUCHERS.map((v) => `<div class="card" style="display:flex;flex-direction:column;justify-content:space-between;gap:12px"><div><p class="mute" style="margin:0">${esc(v.merchant)}</p><h3 style="margin:4px 0 0;font-size:.92rem">${esc(v.title)}</h3></div><div style="display:flex;justify-content:space-between;align-items:center"><b class="num">${v.costPoints} FinPoints</b><button type="button" class="btn sm primary" ${state.finPoints < v.costPoints ? 'disabled' : ''} data-act="redeem" data-id="${v.id}">Đổi lấy mã QR</button></div></div>`).join('')}
-  </div>
-
-  ${state.redeemedVouchers.length ? `<section class="card" style="margin-top:16px"><h3 style="font-size:.95rem;margin-bottom:8px">Voucher của tôi</h3>${state.redeemedVouchers.map((rv) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)"><div><b style="font-size:.85rem">${esc(rv.discountLabel)} · ${esc(rv.merchant)}</b><div class="mute mono">${esc(rv.code)}</div></div><button type="button" class="btn sm tonal" data-act="openqr" data-id="${rv.id}">Mở mã QR</button></div>`).join('')}</section>` : ''}
-
-  <section class="card" style="margin-top:18px">
-    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
-      <div><h2 style="font-size:1rem">🏆 Bảng xếp hạng Tiết Kiệm</h2><p class="mute" style="margin:2px 0 0;color:var(--ok);font-weight:700">Lớp ${esc(state.profile.className)} đang dẫn đầu khối ${state.profile.grade} về tiết kiệm</p></div>
-      <div style="display:flex;gap:6px">${[['school', 'Toàn trường'], ['grade', `Khối ${state.profile.grade}`], ['class', `Lớp ${state.profile.className}`]].map(([sc, lbl]) => `<button type="button" class="btn sm ${ui.boardScope === sc ? 'primary' : ''}" data-scope="${sc}">${lbl}</button>`).join('')}</div>
-    </div>
-    ${board.map((b, i) => `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 8px;border-bottom:1px solid var(--line);${b.isCurrentUser ? 'background:var(--mint);border-radius:12px' : ''}"><span><b>#${i + 1} ${esc(b.name)}</b> ${b.isCurrentUser ? '(Bạn)' : ''} <span class="mute">· Lớp ${esc(b.className)}</span></span><b class="num">${L.formatVND(b.savedThisMonth)}</b></div>`).join('')}
-  </section>`;
-}
-
-function screenAssistant() {
-  const today = L.todayStr();
-  const fc = L.generateForecast(state.transactions, state.budgets, ui.month, today);
-  const cmp = L.buildComparisonReport(state.transactions, state.categories, ui.month);
-  const trend = L.monthlyFlow(state.transactions, ui.month, ui.trendRange);
-
-  return `
-  <section class="card" style="background:var(--lavender);margin-bottom:16px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px">
-    <div><h2 style="font-size:1rem">👑 ${state.isPremium ? 'FinMate Premium HSSV đang bật' : 'FinMate Premium · 179.000 ₫/tháng (Ưu đãi HSSV 49k)'}</h2><p class="mute" style="margin:4px 0 0">Đồng bộ ngân hàng Casso/SePay, Chatbot tư vấn sâu, Báo cáo 12 tháng & Không quảng cáo.</p></div>
-    <button type="button" class="btn sm primary" data-act="togglepremium">${state.isPremium ? 'Đang dùng Premium' : 'Trải nghiệm Premium'}</button>
+  return `<section class="card"><h2>Tài khoản đám mây</h2>
+    <p>Đang đăng nhập: <b>${esc(account.name)}</b> (${esc(account.email)})</p>
+    <p class="hint" style="margin-top:4px">Trạng thái: <b>${syncLabel}</b></p>
+    <div class="row-actions"><button class="btn primary" data-act="logout">Đăng xuất</button><button class="btn" data-act="chpass">Đổi mật khẩu</button></div>
   </section>
-
-  ${!state.isPremium ? '<div class="card" style="background:var(--gold);padding:12px 16px;margin-bottom:16px;font-size:.8rem;font-weight:600">Quảng cáo bản Free: Giảm 20% dụng cụ học tập cho học sinh Mạc Đĩnh Chi.</div>' : ''}
-
-  <div class="grid-2" style="margin-top:0">
-    <section class="card">
-      <h2 style="font-size:1rem">✨ Chatbot Tư vấn Tài chính</h2>
-      <div class="chat-log" id="chat-log">
-        ${state.chatHistory.map((m) => `<div class="bubble-msg ${m.role === 'user' ? 'user' : 'bot'}">${esc(m.text)}</div>`).join('')}
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-        <button type="button" class="btn sm" data-prompt="Tháng này mình tiêu nhiều vào ăn uống quá, làm sao để bớt?">Bớt tiền ăn uống?</button>
-        <button type="button" class="btn sm" data-prompt="Dự báo cuối tháng mình có hết tiền không?">Dự báo cuối tháng</button>
-        <button type="button" class="btn sm" data-prompt="Gợi ý chia ngân sách tự động">Chia ngân sách AI</button>
-      </div>
-      <form id="chatform" style="display:flex;gap:8px">
-        <input id="chat-input" type="text" placeholder="Hỏi trợ lý AI..." aria-label="Nhập câu hỏi" />
-        <button type="submit" class="btn primary">Gửi</button>
-      </form>
-    </section>
-
-    <div style="display:grid;gap:16px">
-      <section class="card">
-        <h2 style="font-size:1rem">📈 Dự báo dòng tiền</h2>
-        <div class="stats-pair" style="margin:12px 0">
-          <div style="background:var(--bg);padding:12px;border-radius:14px"><small class="mute">Tiêu/ngày</small><b class="num" style="display:block;margin-top:4px">${L.formatVND(fc.dailyBurnRate)}</b></div>
-          <div style="background:var(--bg);padding:12px;border-radius:14px"><small class="mute">Dự kiến tháng</small><b class="num" style="display:block;margin-top:4px">${L.formatVND(fc.projectedMonthEndSpend)}</b></div>
-        </div>
-        <p style="margin:0;font-size:.82rem;background:var(--mint);padding:12px;border-radius:14px">${esc(fc.summaryText)}</p>
-      </section>
-
-      <section class="card">
-        <h2 style="font-size:1rem">🏦 Tích hợp Ngân hàng (${esc(state.bankSync.provider)})</h2>
-        <p class="mute" style="margin:6px 0 12px">${esc(state.bankSync.bankName)} (${esc(state.bankSync.accountMask)}) · Đồng bộ lúc ${esc(state.bankSync.lastSyncedAt)}</p>
-        <button type="button" class="btn primary block" style="margin-top:0" data-act="banksync">↻ Đồng bộ giao dịch ngân hàng ngay</button>
-      </section>
-    </div>
-  </div>
-
-  <section class="card" style="margin-top:16px">
-    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px">
-      <div><h2 style="font-size:1rem">Báo cáo chi tiết & So sánh tháng trước</h2><p class="mute" style="margin:2px 0 0">${monthLabel(ui.month)} vs ${monthLabel(cmp.prevMonth)}</p></div>
-      <div style="display:flex;gap:6px"><button type="button" class="btn sm ${ui.trendRange === 6 ? 'primary' : ''}" data-range="6">6 tháng</button><button type="button" class="btn sm ${ui.trendRange === 12 ? 'primary' : ''}" data-range="12">12 tháng</button><button type="button" class="btn sm" data-act="exportcsv">↓ Xuất CSV</button></div>
-    </div>
-    <div class="grid-2" style="margin-top:0">
-      <div>${flowSVG(trend)}</div>
-      <div style="overflow-x:auto">
-        <table><thead><tr><th>Danh mục</th><th class="tr">Tháng trước</th><th class="tr">Tháng này</th><th class="tr">Chênh lệch</th></tr></thead>
-        <tbody>${cmp.rows.map((r) => `<tr><td>${r.icon} ${esc(r.name)}</td><td class="tr num">${L.formatVND(r.prevVal)}</td><td class="tr num"><b>${L.formatVND(r.currentVal)}</b></td><td class="tr num" style="color:${r.diff > 0 ? 'var(--err)' : 'var(--ok)'}">${r.diff > 0 ? '+' : ''}${r.diffPct}%</td></tr>`).join('')}</tbody></table>
-      </div>
-    </div>
-  </section>`;
+  <section class="card"><h2>Sao lưu & xuất dữ liệu</h2><p>Dữ liệu tự động đồng bộ trên mọi thiết bị của bạn. Bạn cũng có thể tải bản sao lưu thủ công bất cứ lúc nào.</p>
+    <div class="row-actions"><button class="btn primary" data-act="exportjson">Sao lưu (JSON)</button><button class="btn" data-act="exportcsv">Xuất CSV</button><button class="btn" data-act="import">Khôi phục từ file</button></div>
+    <input id="file" type="file" accept="application/json" hidden></section>
+  <section class="card"><h2>Quyền riêng tư</h2><p>FinMate không hỏi mật khẩu ngân hàng và không giữ tiền. Dữ liệu tài chính của bạn được bảo vệ theo tài khoản cá nhân trên đám mây.</p>
+    <div class="row-actions"><button class="btn danger" data-act="wipe">Xóa toàn bộ dữ liệu của tôi</button></div></section>`;
 }
 
-function screenSettings() {
-  return `
-  <div class="grid-2" style="margin-top:0">
-    <div style="display:grid;gap:16px">
-      <section class="card">
-        <h2 style="font-size:1rem">🌙 Giao diện</h2>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
-          <span class="mute">Chế độ Tối (Dark Mode)</span>
-          <button type="button" class="btn sm primary" data-act="toggledark">${state.darkMode ? 'Bật Chế độ Sáng' : 'Bật Chế độ Tối'}</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 style="font-size:1rem">📊 Xuất báo cáo Excel/CSV & Sao lưu</h2>
-        <p class="mute" style="margin:6px 0 12px">Tải file <b>BaoCao_FinMate.csv</b> mở bằng Excel hoặc sao lưu/khôi phục JSON.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          <button type="button" class="btn primary" data-act="exportcsv">↓ Tải báo cáo chi tiêu</button>
-          <button type="button" class="btn" data-act="exportjson">Sao lưu JSON</button>
-          <button type="button" class="btn" data-act="importjson">Khôi phục JSON</button>
-          <a class="btn tonal" href="/FinMate-HTML-CSS-JS.zip" download="FinMate-HTML-CSS-JS.zip">↓ Tải HTML/CSS/JS (.zip)</a>
-          <button type="button" class="btn danger" data-act="reset">Khôi phục mẫu</button>
-          <input id="json-import" type="file" accept="application/json" hidden />
-        </div>
-      </section>
-    </div>
-
-    <form class="card" id="profileform">
-      <h2 style="font-size:1rem">🎓 Hồ sơ học sinh</h2>
-      <label for="pname">Tên hiển thị</label><input id="pname" value="${esc(state.profile.name)}" />
-      <label for="pclass">Lớp</label><input id="pclass" value="${esc(state.profile.className)}" />
-      <label for="pgrade">Khối</label><select id="pgrade"><option value="10" ${state.profile.grade === 10 ? 'selected' : ''}>Khối 10</option><option value="11" ${state.profile.grade === 11 ? 'selected' : ''}>Khối 11</option><option value="12" ${state.profile.grade === 12 ? 'selected' : ''}>Khối 12</option></select>
-      <button type="submit" class="btn primary block">Lưu hồ sơ</button>
-    </form>
-  </div>`;
-}
-
-const TITLES = {
-  home: ['Hôm nay', screenHome, true],
-  tx: ['Giao dịch & Ví', screenTx, true],
-  plan: ['Kế hoạch', screenPlan, true],
-  rewards: ['FinPoints & Xếp hạng', screenRewards, false],
-  assistant: ['Trợ lý AI & Premium', screenAssistant, true],
-  settings: ['Cài đặt', screenSettings, false],
-};
-
+const SCREENS = { home: ['Hôm nay', home, true], tx: ['Giao dịch', txs, true], plan: ['Kế hoạch', plan, false], settings: ['Cài đặt', settings, false] };
 function render() {
-  document.documentElement.classList.toggle('dark', Boolean(state.darkMode));
-  const [title, fn, showMonth] = TITLES[ui.tab];
-  $('#bar').innerHTML = `<div><h1>${title}</h1><p class="bar-sub">${esc(state.profile.name)} · Lớp ${esc(state.profile.className)} · ${esc(state.profile.school)}</p></div>
-  <div class="bar-right">${showMonth ? `<div class="pill"><button type="button" data-act="mprev" aria-label="Tháng trước">‹</button><b class="num">${monthLabel(ui.month)}</b><button type="button" data-act="mnext" aria-label="Tháng sau">›</button></div>` : ''}<button type="button" class="btn sm primary" data-act="add">+ Thêm</button></div>`;
+  if (!account) return;
+  const [title, fn, monthly] = SCREENS[ui.tab];
+  const showMonth = monthly || (ui.tab === 'plan' && ui.plan === 'budget');
+  $('#bar').innerHTML = `<h1>${title}</h1>${showMonth ? `<div class="pill"><button data-act="mprev" aria-label="Tháng trước">‹</button><b>${monthLabel(ui.month)}</b><button data-act="mnext" aria-label="Tháng sau">›</button></div>` : ''}`;
   $('#view').innerHTML = fn();
-  $('#sidebar-user').innerHTML = `<p class="sidebar-user-name">${esc(state.profile.name)}</p><p class="sidebar-user-sub">Lớp ${esc(state.profile.className)} · ${state.finPoints} FinPoints</p>`;
-  $('#theme-state').textContent = state.darkMode ? 'Bật' : 'Tắt';
-  document.querySelectorAll('[data-tab]').forEach((b) => {
-    if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page');
-    else b.removeAttribute('aria-current');
-  });
-  const chatLog = $('#chat-log');
-  if (chatLog) chatLog.scrollTop = chatLog.scrollHeight;
+  document.querySelectorAll('#nav [data-tab]').forEach((b) => { if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
 }
 
+/* ---------- sheets ---------- */
 const dlg = $('#dlg');
-function openAddTx(presetCat = 'food') {
-  let type = 'expense', catId = presetCat, walletId = 'cash';
-  dlg.innerHTML = `<form id="txform"><h2 style="margin:0 0 12px">Thêm giao dịch</h2>
-    <div class="seg"><button type="button" aria-selected="true" data-type="expense">Chi tiêu</button><button type="button" aria-selected="false" data-type="income">Thu nhập</button></div>
-    <label for="amt">Số tiền (VD: 50k, 1,5tr)</label><input id="amt" name="amt" placeholder="50k" required />
-    <label for="wal">Ví nguồn tiền</label><select id="wal" name="wal">${state.wallets.map((w) => `<option value="${w.id}">${w.icon} ${esc(w.name)}</option>`).join('')}</select>
-    <label for="cat">Danh mục</label><select id="cat" name="cat"></select>
-    <label for="note">Ghi chú</label><input id="note" name="note" placeholder="VD: Trà sữa cổng trường" />
-    <div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn" id="cancel-dlg" style="flex:1">Hủy</button><button type="submit" class="btn primary" style="flex:2">Lưu giao dịch</button></div>
-  </form>`;
-  const syncCats = () => {
-    const opts = state.categories.filter((c) => c.type === type);
-    if (!opts.some((c) => c.id === catId)) catId = opts[0].id;
-    dlg.querySelector('#cat').innerHTML = opts.map((c) => `<option value="${c.id}" ${c.id === catId ? 'selected' : ''}>${c.icon} ${esc(c.name)}</option>`).join('');
-    dlg.querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.type === type)));
+function sheet(title, body, submitLabel, onSubmit) {
+  dlg.innerHTML = `<form class="sheet" id="f" novalidate><h2>${title}</h2>${body}<div class="sheet-actions"><button type="button" class="btn" data-close>Hủy</button><button class="btn primary" type="submit">${submitLabel}</button></div></form>`;
+  dlg.onclick = (e) => { if (e.target === dlg) dlg.close(); };
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  dlg.querySelector('#f').onsubmit = (e) => { e.preventDefault(); if (onSubmit(new FormData(e.target)) !== false) dlg.close(); };
+  dlg.showModal();
+}
+const money = (name = 'amount', ph = '0') => `<div class="money"><input id="${name}" name="${name}" inputmode="decimal" autocomplete="off" placeholder="${ph}" aria-label="Số tiền"><span>₫</span></div><p class="hint" id="${name}-hint">Gõ 50k, 50.000 hoặc 1,5tr</p>`;
+function wireMoney(name) {
+  const i = dlg.querySelector('#' + name), h = dlg.querySelector('#' + name + '-hint');
+  i.addEventListener('input', () => { const v = L.parseAmount(i.value); h.textContent = i.value && !Number.isNaN(v) ? '= ' + vnd(v) : i.value ? 'Chưa hiểu số tiền này. Thử 50k hoặc 50.000.' : 'Gõ 50k, 50.000 hoặc 1,5tr'; });
+  return i;
+}
+const need = (v) => { const n = L.parseAmount(v); if (!(n > 0)) { toast('Nhập số tiền lớn hơn 0.'); return null; } return n; };
+
+function addTx(pre) {
+  let type = 'expense', catId = (typeof pre === 'string' && pre) || ui.recent.find((id) => cat(id).type === 'expense') || 'food';
+  sheet('Thêm giao dịch', `<div class="seg type" data-type="expense" id="types"><button type="button" data-type="expense">Chi</button><button type="button" data-type="income">Thu</button></div>
+    ${money()}<div class="chips" id="quick">${[10000, 20000, 50000, 100000].map((v) => `<button type="button" class="chip quick" data-add="${v}">+${v / 1000}k</button>`).join('')}</div>
+    <label>Danh mục</label><div class="chips" id="cats"></div>
+    <label for="date">Ngày</label><input id="date" name="date" type="date" value="${L.todayStr()}" max="${L.todayStr()}">
+    <label for="note">Ghi chú (không bắt buộc)</label><input id="note" name="note" maxlength="80" placeholder="VD: trà sữa với bạn">`, 'Lưu giao dịch', (fd) => {
+    const amount = need(fd.get('amount')); if (!amount) return false;
+    const date = fd.get('date') || L.todayStr();
+    state.transactions.push({ id: L.uid(), type, amount, categoryId: catId, date, note: fd.get('note').trim() });
+    pushRecent(catId); ui.month = L.monthKey(date); save(); render(); toast('Đã lưu giao dịch');
+  });
+  const amountEl = wireMoney('amount');
+  const draw = () => {
+    const cats = state.categories.filter((c) => c.type === type);
+    if (!cats.some((c) => c.id === catId)) catId = cats[0].id;
+    const rank = (id) => { const i = ui.recent.indexOf(id); return i < 0 ? 99 : i; };
+    dlg.querySelector('#cats').innerHTML = [...cats].sort((a, b) => rank(a.id) - rank(b.id)).map((c) => `<button type="button" class="chip" style="--c:${cat(c.id).color}" aria-pressed="${c.id === catId}" data-cat="${c.id}">${c.icon} ${esc(c.name)}</button>`).join('');
+    dlg.querySelector('#types').dataset.type = type;
+    dlg.querySelectorAll('[data-type]').forEach((b) => b.tagName === 'BUTTON' && b.setAttribute('aria-pressed', b.dataset.type === type));
   };
-  dlg.querySelector('#txform').onclick = (e) => {
-    const bt = e.target.closest('[data-type]');
-    if (bt) { type = bt.dataset.type; syncCats(); }
-  };
-  dlg.querySelector('#cancel-dlg').onclick = () => dlg.close();
-  dlg.querySelector('#txform').onsubmit = (e) => {
-    e.preventDefault();
-    const amount = L.parseAmount(dlg.querySelector('#amt').value);
-    if (!(amount > 0)) { toast('Nhập số tiền hợp lệ.'); return; }
-    walletId = dlg.querySelector('#wal').value;
-    catId = dlg.querySelector('#cat').value;
-    const note = dlg.querySelector('#note').value.trim();
-    const today = L.todayStr();
-    const newTx = { id: L.uid(), type, amount, categoryId: catId, walletId, date: today, note };
-    state.transactions.push(newTx);
-    if (type === 'income') {
-      const alloc = L.applyJarAutoAllocation(state.jars, amount, today);
-      state.jars = alloc.updatedJars;
+  dlg.querySelector('#f').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.type) { type = b.dataset.type; draw(); }
+    if (b.dataset.cat) { catId = b.dataset.cat; draw(); }
+    if (b.dataset.add) { const cur = L.parseAmount(amountEl.value); amountEl.value = String((Number.isNaN(cur) ? 0 : cur) + Number(b.dataset.add)); amountEl.dispatchEvent(new Event('input')); amountEl.focus(); }
+  });
+  draw(); amountEl.focus();
+}
+function addBudget(prefill) {
+  const editing = prefill && typeof prefill === 'object' ? prefill : null;
+  const opts = ['<option value="">Tổng chi tiêu cả tháng</option>', ...state.categories.filter((c) => c.type === 'expense').map((c) => `<option value="${c.id}">${c.icon} ${esc(c.name)}</option>`)].join('');
+  sheet(editing ? 'Sửa ngân sách' : 'Đặt ngân sách', `<label for="c">Áp dụng cho</label><select id="c" name="c"${editing ? ' disabled' : ''}>${opts}</select>${editing ? '<p class="hint">Muốn đổi danh mục? Xóa ngân sách này rồi tạo cái mới.</p>' : ''}<label>Hạn mức mỗi tháng</label>${money('limit')}`, 'Lưu ngân sách', (fd) => {
+    const limit = need(fd.get('limit')); if (!limit) return false;
+    if (editing) { const b = state.budgets.find((x) => x.id === editing.id); if (b) b.limit = limit; }
+    else {
+      const categoryId = fd.get('c') || null, existing = state.budgets.find((b) => b.categoryId === categoryId);
+      if (existing) existing.limit = limit; else state.budgets.push({ id: L.uid(), categoryId, limit });
     }
-    ui.month = L.monthKey(today);
-    save(); dlg.close(); render(); toast('Đã lưu giao dịch');
-  };
-  syncCats();
-  dlg.showModal();
+    save(); render(); toast(editing ? 'Đã cập nhật ngân sách' : 'Đã lưu ngân sách');
+  });
+  const limitEl = wireMoney('limit');
+  if (editing) { dlg.querySelector('#c').value = editing.categoryId || ''; limitEl.value = String(editing.limit); limitEl.dispatchEvent(new Event('input')); limitEl.select(); }
+  else limitEl.focus();
+}
+function addGoal() {
+  sheet('Tạo mục tiêu tiết kiệm', `<label for="n">Bạn muốn dành tiền cho gì?</label><input id="n" name="n" maxlength="60" placeholder="VD: Laptop mới">
+    <label>Số tiền cần đạt</label>${money('target')}<label for="d">Hạn (không bắt buộc)</label><input id="d" name="d" type="date">`, 'Tạo mục tiêu', (fd) => {
+    const name = fd.get('n').trim(); if (!name) { toast('Nhập tên mục tiêu.'); return false; }
+    const target = need(fd.get('target')); if (!target) return false;
+    state.goals.push({ id: L.uid(), name, target, deadline: fd.get('d') || '', contributions: [] }); save(); render(); toast('Đã tạo mục tiêu');
+  });
+  wireMoney('target'); dlg.querySelector('#n').focus();
+}
+function contrib(id) {
+  sheet('Góp tiền vào mục tiêu', money(), 'Góp tiền', (fd) => {
+    const amount = need(fd.get('amount')); if (!amount) return false;
+    state.goals.find((g) => g.id === id).contributions.push({ amount, date: L.todayStr() }); save(); render(); toast('Đã góp tiền');
+  });
+  wireMoney('amount').focus();
 }
 
-function openBudgetModal() {
-  const overall = state.budgets.find((b) => b.categoryId === null);
-  dlg.innerHTML = `<form id="budgetform"><h2 style="margin:0 0 12px">Đặt ngân sách tháng</h2>
-    <label for="bcat">Áp dụng cho</label>
-    <select id="bcat"><option value="">💰 Tổng chi tiêu tháng</option>${state.categories.filter((c) => c.type === 'expense').map((c) => `<option value="${c.id}">${c.icon} ${esc(c.name)}</option>`).join('')}</select>
-    <label for="blim">Hạn mức (VD: 1,5tr hoặc 450k)</label><input id="blim" value="${overall ? overall.limit : 1500000}" required />
-    <div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn" id="cancel-dlg" style="flex:1">Hủy</button><button type="submit" class="btn primary" style="flex:2">Lưu ngân sách</button></div>
-  </form>`;
-  dlg.querySelector('#cancel-dlg').onclick = () => dlg.close();
-  dlg.querySelector('#budgetform').onsubmit = (e) => {
-    e.preventDefault();
-    const lim = L.parseAmount(dlg.querySelector('#blim').value);
-    if (!(lim > 0)) { toast('Nhập hạn mức hợp lệ.'); return; }
-    const catId = dlg.querySelector('#bcat').value || null;
-    const existing = state.budgets.find((x) => x.categoryId === catId);
-    if (existing) existing.limit = lim;
-    else state.budgets.push({ id: L.uid(), categoryId: catId, limit: lim });
-    save(); dlg.close(); render(); toast('Đã cập nhật ngân sách');
-  };
-  dlg.showModal();
-}
-
-function openJarModal() {
-  dlg.innerHTML = `<form id="jarform"><h2 style="margin:0 0 12px">Tạo hũ tiết kiệm mới</h2>
-    <label for="jname">Tên mục tiêu</label><input id="jname" placeholder="VD: Mua sách ôn thi" required />
-    <label for="jtarget">Số tiền mục tiêu (VD: 500k, 1,2tr)</label><input id="jtarget" placeholder="500k" required />
-    <label for="jpct">Tự động trích % từ thu nhập mới</label><input id="jpct" type="number" min="0" max="50" value="10" />
-    <div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn" id="cancel-dlg" style="flex:1">Hủy</button><button type="submit" class="btn primary" style="flex:2">Tạo hũ</button></div>
-  </form>`;
-  dlg.querySelector('#cancel-dlg').onclick = () => dlg.close();
-  dlg.querySelector('#jarform').onsubmit = (e) => {
-    e.preventDefault();
-    const name = dlg.querySelector('#jname').value.trim();
-    const target = L.parseAmount(dlg.querySelector('#jtarget').value);
-    const pct = Math.max(0, Math.min(50, Number(dlg.querySelector('#jpct').value) || 0));
-    if (!name || !(target > 0)) { toast('Nhập tên và mục tiêu hợp lệ.'); return; }
-    state.jars.unshift({ id: L.uid(), name, icon: '🎯', target, autoAllocatePct: pct, contributions: [] });
-    save(); dlg.close(); render(); toast('Đã tạo hũ tiết kiệm');
-  };
-  dlg.showModal();
-}
-
-function openDebtModal() {
-  dlg.innerHTML = `<form id="debtform"><h2 style="margin:0 0 12px">Ghi sổ nợ bạn bè</h2>
-    <label for="ddir">Loại khoản</label><select id="ddir"><option value="lend">Mình cho bạn vay</option><option value="borrow">Mình vay của bạn</option></select>
-    <label for="dperson">Tên bạn bè</label><input id="dperson" placeholder="VD: Khánh Vy" required />
-    <label for="damt">Số tiền (VD: 50k)</label><input id="damt" placeholder="50k" required />
-    <label for="dwal">Ví giao dịch</label><select id="dwal">${state.wallets.map((w) => `<option value="${w.id}">${w.icon} ${esc(w.name)}</option>`).join('')}</select>
-    <label for="dnote">Ghi chú</label><input id="dnote" placeholder="VD: Ứng tiền trà sữa" />
-    <div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn" id="cancel-dlg" style="flex:1">Hủy</button><button type="submit" class="btn primary" style="flex:2">Lưu sổ nợ</button></div>
-  </form>`;
-  dlg.querySelector('#cancel-dlg').onclick = () => dlg.close();
-  dlg.querySelector('#debtform').onsubmit = (e) => {
-    e.preventDefault();
-    const personName = dlg.querySelector('#dperson').value.trim();
-    const amount = L.parseAmount(dlg.querySelector('#damt').value);
-    if (!personName || !(amount > 0)) { toast('Nhập tên và số tiền hợp lệ.'); return; }
-    state.debts.unshift({
-      id: L.uid(),
-      direction: dlg.querySelector('#ddir').value,
-      personName,
-      className: state.profile.className,
-      amount,
-      date: L.todayStr(),
-      note: dlg.querySelector('#dnote').value.trim() || 'Ứng tiền',
-      walletId: dlg.querySelector('#dwal').value,
-      settled: false,
-    });
-    save(); dlg.close(); render(); toast('Đã ghi vào sổ nợ');
-  };
-  dlg.showModal();
-}
-
-function openTransferModal() {
-  dlg.innerHTML = `<form id="xferform"><h2 style="margin:0 0 12px">Chuyển tiền giữa các ví</h2>
-    <label for="xfrom">Từ ví</label><select id="xfrom">${state.wallets.map((w) => `<option value="${w.id}" ${w.id === 'bank' ? 'selected' : ''}>${w.icon} ${esc(w.name)}</option>`).join('')}</select>
-    <label for="xto">Sang ví</label><select id="xto">${state.wallets.map((w) => `<option value="${w.id}" ${w.id === 'momo' ? 'selected' : ''}>${w.icon} ${esc(w.name)}</option>`).join('')}</select>
-    <label for="xamt">Số tiền (VD: 100k)</label><input id="xamt" placeholder="100k" required />
-    <div style="display:flex;gap:8px;margin-top:16px"><button type="button" class="btn" id="cancel-dlg" style="flex:1">Hủy</button><button type="submit" class="btn primary" style="flex:2">Chuyển tiền</button></div>
-  </form>`;
-  dlg.querySelector('#cancel-dlg').onclick = () => dlg.close();
-  dlg.querySelector('#xferform').onsubmit = (e) => {
-    e.preventDefault();
-    const fromId = dlg.querySelector('#xfrom').value;
-    const toId = dlg.querySelector('#xto').value;
-    const amt = L.parseAmount(dlg.querySelector('#xamt').value);
-    if (fromId === toId) { toast('Chọn 2 ví khác nhau.'); return; }
-    if (!(amt > 0)) { toast('Nhập số tiền hợp lệ.'); return; }
-    const today = L.todayStr();
-    state.transactions.push(
-      { id: L.uid(), type: 'expense', amount: amt, categoryId: 'other-exp', walletId: fromId, date: today, note: `Chuyển sang ${wallet(toId).shortName}` },
-      { id: L.uid(), type: 'income', amount: amt, categoryId: 'other-inc', walletId: toId, date: today, note: `Nhận từ ${wallet(fromId).shortName}` }
-    );
-    save(); dlg.close(); render(); toast(`Đã chuyển ${L.formatVND(amt)} sang ${wallet(toId).shortName}`);
-  };
-  dlg.showModal();
-}
-
-function openQRModal(rv) {
-  dlg.innerHTML = `<div style="text-align:center"><h2 style="margin:0 0 6px">Mã QR Voucher</h2><p class="mute">${esc(rv.merchant)}</p><p style="font-weight:800">${esc(rv.title)}</p><div style="display:inline-block;padding:16px;background:#fff;border-radius:18px;border:1px solid #ddd"><svg width="140" height="140" viewBox="0 0 70 70">${Array.from({ length: 49 }, (_, i) => ((i * 7 + rv.code.charCodeAt(i % rv.code.length)) % 2 === 0 ? `<rect x="${(i % 7) * 10}" y="${Math.floor(i / 7) * 10}" width="8" height="8" rx="1.5" fill="#183C35"/>` : '')).join('')}</svg></div><p class="mono" style="font-size:1.1rem;font-weight:800">${esc(rv.code)}</p><button type="button" class="btn primary block" id="close-qr">Xong</button></div>`;
-  dlg.querySelector('#close-qr').onclick = () => dlg.close();
-  dlg.showModal();
-}
-
+/* ---------- actions ---------- */
+function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+const actions = {
+  add: () => addTx(), addcat: (id) => addTx(id), addbudget: () => addBudget(), 'addbudget-total': () => addBudget(true), addgoal: addGoal, contrib,
+  mprev: () => { ui.month = L.shiftMonth(ui.month, -1); render(); },
+  mnext: () => { ui.month = L.shiftMonth(ui.month, 1); render(); },
+  deltx: (id) => { const i = state.transactions.findIndex((t) => t.id === id), [gone] = state.transactions.splice(i, 1); save(); render();
+    toast('Đã xóa giao dịch', { label: 'Hoàn tác', run: () => { state.transactions.splice(i, 0, gone); save(); render(); } }); },
+  editbudget: (id) => addBudget(state.budgets.find((b) => b.id === id)),
+  contrib250: (id) => { state.goals.find((g) => g.id === id).contributions.push({ amount: 250000, date: L.todayStr() }); save(); render(); toast('Đã góp 250.000 ₫'); },
+  delbudget: (id) => { const i = state.budgets.findIndex((b) => b.id === id), [gone] = state.budgets.splice(i, 1); save(); render();
+    toast('Đã xóa ngân sách', { label: 'Hoàn tác', run: () => { state.budgets.splice(i, 0, gone); save(); render(); } }); },
+  delgoal: (id) => { if (confirm('Xóa mục tiêu này cùng các khoản đã góp?')) { state.goals = state.goals.filter((g) => g.id !== id); save(); render(); } },
+  logout: () => leave(),
+  chpass: () => passwordSheet(),
+  exportjson: () => download(`finmate-${L.todayStr()}.json`, JSON.stringify(state, null, 2), 'application/json'),
+  exportcsv: () => download(`finmate-${L.todayStr()}.csv`, L.toCSV(state.transactions, state.categories), 'text/csv;charset=utf-8'),
+  import: () => $('#file').click(),
+  wipe: () => { if (confirm('Xóa TOÀN BỘ dữ liệu trên đám mây? Bạn không thể hoàn tác.')) { state = L.emptyState(); ui.recent = []; save(); render(); toast('Đã xóa toàn bộ dữ liệu'); } },
+};
+const go = (tab) => { ui.tab = tab; render(); window.scrollTo(0, 0); };
 document.addEventListener('click', (e) => {
-  const tabBtn = e.target.closest('[data-tab]');
-  if (tabBtn) { ui.tab = tabBtn.dataset.tab; render(); return; }
-  const planBtn = e.target.closest('[data-plantab]');
-  if (planBtn) { ui.planTab = planBtn.dataset.plantab; render(); return; }
-  const walBtn = e.target.closest('[data-wallet]');
-  if (walBtn) { ui.walletFilter = walBtn.dataset.wallet; render(); return; }
-  const scBtn = e.target.closest('[data-scope]');
-  if (scBtn) { ui.boardScope = scBtn.dataset.scope; render(); return; }
-  const rgBtn = e.target.closest('[data-range]');
-  if (rgBtn) { ui.trendRange = Number(rgBtn.dataset.range); render(); return; }
-  const prBtn = e.target.closest('[data-prompt]');
-  if (prBtn) {
-    const q = prBtn.dataset.prompt;
-    state.chatHistory.push({ id: L.uid(), role: 'user', text: q }, { id: L.uid(), role: 'assistant', text: L.answerAIChat(q, state, ui.month, L.todayStr()) });
-    save(); render(); return;
-  }
-
-  const act = e.target.closest('[data-act]');
-  if (!act) return;
-  const { act: a, id } = act.dataset;
-  const today = L.todayStr();
-
-  if (a === 'add') openAddTx();
-  else if (a === 'addcat') openAddTx(id);
-  else if (a === 'mprev') { ui.month = L.shiftMonth(ui.month, -1); render(); }
-  else if (a === 'mnext') { ui.month = L.shiftMonth(ui.month, 1); render(); }
-  else if (a === 'toggledark') { state.darkMode = !state.darkMode; save(); render(); }
-  else if (a === 'gojars') { ui.tab = 'plan'; ui.planTab = 'jars'; render(); }
-  else if (a === 'gorewards') { ui.tab = 'rewards'; render(); }
-  else if (a === 'checkin' && state.lastCheckInDate !== today) {
-    state.streakDays += 1; state.lastCheckInDate = today; state.finPoints += 15;
-    state.pointHistory.unshift({ id: L.uid(), title: `Điểm danh ngày ${state.streakDays}`, points: 15, date: today });
-    save(); render(); toast('Điểm danh thành công! +15 FinPoints');
-  } else if (a === 'claimweek') {
-    const wk = currentWeekKey(today);
-    if (state.weeklyBudgetBonusClaimedWeek !== wk) {
-      state.weeklyBudgetBonusClaimedWeek = wk;
-      state.finPoints += 50;
-      state.pointHistory.unshift({ id: L.uid(), title: 'Thưởng giữ vững ngân sách tuần', points: 50, date: today });
-      save(); render(); toast('Nhận +50 FinPoints giữ vững ngân sách!');
-    }
-  } else if (a === 'deltx') {
-    const idx = state.transactions.findIndex((t) => t.id === id);
-    if (idx >= 0) {
-      const [gone] = state.transactions.splice(idx, 1);
-      save(); render();
-      toast('Đã xóa giao dịch', () => { state.transactions.splice(idx, 0, gone); save(); render(); });
-    }
-  } else if (a === 'applyautobudget') {
-    const plan = L.generateAutoBudgetPlan(Number(id) || 1_800_000);
-    state.budgets = [{ id: 'b-all', categoryId: null, limit: plan.totalLimit }, ...plan.allocations.map((x) => ({ id: 'b-' + x.categoryId, categoryId: x.categoryId, limit: x.limit }))];
-    save(); render(); toast('Đã áp dụng ngân sách AI');
-  } else if (a === 'delbudget') {
-    state.budgets = state.budgets.filter((b) => b.id !== id); save(); render();
-  } else if (a === 'jar100' || a === 'jar250') {
-    const amt = a === 'jar100' ? 100_000 : 250_000;
-    const j = state.jars.find((x) => x.id === id);
-    if (j) {
-      const wasDone = L.goalPct(j) >= 100;
-      j.contributions.push({ amount: amt, date: today });
-      if (!wasDone && L.goalPct(j) >= 100) {
-        state.finPoints += 50;
-        state.pointHistory.unshift({ id: L.uid(), title: `Hoàn thành hũ ${j.name}`, points: 50, date: today });
-        toast(`Hoàn thành hũ ${j.name}! +50 FinPoints`);
-      } else {
-        toast(`Đã góp ${L.formatVND(amt)}`);
-      }
-      save(); render();
-    }
-  } else if (a === 'deljar') {
-    state.jars = state.jars.filter((j) => j.id !== id); save(); render();
-  } else if (a === 'settledebt') {
-    const d = state.debts.find((x) => x.id === id);
-    if (d && !d.settled) {
-      d.settled = true;
-      state.transactions.push({ id: L.uid(), type: d.direction === 'lend' ? 'income' : 'expense', amount: d.amount, categoryId: d.direction === 'lend' ? 'other-inc' : 'other-exp', walletId: d.walletId, date: today, note: `Tất toán với ${d.personName}` });
-      save(); render(); toast(`Đã tất toán với ${d.personName}`);
-    }
-  } else if (a === 'redeem') {
-    const v = L.MAC_DINH_CHI_VOUCHERS.find((x) => x.id === id);
-    if (v && state.finPoints >= v.costPoints) {
-      state.finPoints -= v.costPoints;
-      const rv = { id: L.uid(), merchant: v.merchant, title: v.title, discountLabel: v.discountLabel, code: `FM-MDC-${Math.floor(1000 + Math.random() * 9000)}`, redeemedAt: today, used: false };
-      state.redeemedVouchers.unshift(rv);
-      state.pointHistory.unshift({ id: L.uid(), title: `Đổi ${v.discountLabel}`, points: -v.costPoints, date: today });
-      save(); render(); openQRModal(rv);
-    }
-  } else if (a === 'openqr') {
-    const rv = state.redeemedVouchers.find((x) => x.id === id);
-    if (rv) openQRModal(rv);
-  } else if (a === 'togglepremium') {
-    state.isPremium = !state.isPremium; save(); render();
-  } else if (a === 'banksync') {
-    const tpl = L.BANK_SYNC_FEED[state.transactions.length % L.BANK_SYNC_FEED.length];
-    state.transactions.push({ ...tpl, id: L.uid(), date: today });
-    state.bankSync.lastSyncedAt = `${today} ${new Date().toTimeString().slice(0, 5)}`;
-    save(); render(); toast(`Đã đồng bộ giao dịch ${L.formatVND(tpl.amount)}`);
-  } else if (a === 'exportcsv') {
-    downloadFile('BaoCao_FinMate.csv', L.toCSV(state.transactions, state.categories, state.wallets), 'text/csv;charset=utf-8');
-    toast('Đã tải BaoCao_FinMate.csv');
-  } else if (a === 'exportjson') {
-    downloadFile(`finmate-backup-${today}.json`, JSON.stringify(state, null, 2), 'application/json');
-    toast('Đã xuất file JSON');
-  } else if (a === 'importjson') {
-    $('#json-import')?.click();
-  } else if (a === 'reset') {
-    state = L.createSeedState(); save(); render(); toast('Đã khôi phục dữ liệu mẫu');
-  } else if (a === 'addbudget') {
-    openBudgetModal();
-  } else if (a === 'addjar') {
-    openJarModal();
-  } else if (a === 'adddebt') {
-    openDebtModal();
-  } else if (a === 'transfer') {
-    openTransferModal();
-  }
+  const a = e.target.closest('[data-act]'); if (a) return actions[a.dataset.act]?.(a.dataset.id);
+  const p = e.target.closest('[data-plan]'); if (p) { ui.plan = p.dataset.plan; return render(); }
+  const g = e.target.closest('[data-tab-go]'); if (g) return go(g.dataset.tabGo);
+  const t = e.target.closest('#nav [data-tab]'); if (t) go(t.dataset.tab);
+});
+$('#add').addEventListener('click', () => addTx());
+document.addEventListener('input', (e) => { if (e.target.id !== 'q') return; ui.q = e.target.value; $('#txlist').innerHTML = txListHtml(); $('#qhint').textContent = ui.q.trim() ? 'Đang tìm trong tất cả các tháng.' : ''; });
+for (const ev of ['pointerover', 'click']) document.addEventListener(ev, (e) => { const h = e.target.closest?.('[data-hit]'); if (h) setFlow(Number(h.dataset.hit)); });
+$('#view').addEventListener('change', async (e) => {
+  if (e.target.id !== 'file' || !e.target.files[0]) return;
+  try { const next = L.validateImport(JSON.parse(await e.target.files[0].text())); if (confirm('Thay dữ liệu hiện tại bằng file này?')) { state = next; save(); render(); toast('Đã khôi phục dữ liệu'); } }
+  catch (err) { toast((err.message || 'File không hợp lệ') + '. Chọn file sao lưu FinMate (.json).'); }
 });
 
-document.addEventListener('change', (e) => {
-  if (e.target.id === 'json-import') {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    file.text().then((txt) => {
-      try {
-        const parsed = JSON.parse(txt);
-        if (parsed && Array.isArray(parsed.transactions)) {
-          state = parsed;
-          save(); render(); toast('Đã khôi phục dữ liệu JSON');
-        } else {
-          toast('File JSON không hợp lệ.');
-        }
-      } catch {
-        toast('Không đọc được file JSON.');
-      }
-    });
-    e.target.value = '';
-  }
-});
+/* ---------- cloud accounts & login screen ---------- */
+const authEl = $('#auth');
+const pw = (id, label, ac) =>
+  `<label for="${id}">${label}</label><div class="pwrap"><input id="${id}" name="${id}" type="password" autocomplete="${ac}"><button type="button" class="eye" data-eye="${id}" aria-label="Hiện mật khẩu">Hiện</button></div>`;
+const brand = '<svg viewBox="0 0 32 32" aria-hidden="true">' + document.querySelector('.nav .brand svg').innerHTML + '</svg>';
+const googleIcon = '<svg width="18" height="18" viewBox="0 0 48 48" style="vertical-align:middle;margin-right:8px"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
 
-document.addEventListener('input', (e) => {
-  if (e.target.id === 'q') {
-    ui.query = e.target.value;
-    const pos = e.target.selectionStart;
-    render();
-    const inp = $('#q');
-    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
-  }
-});
+function showAuth(mode = 'login') {
+  document.body.classList.add('locked');
+  authEl.hidden = false;
+  let body;
 
-document.addEventListener('submit', (e) => {
-  if (e.target.id === 'chatform') {
-    e.preventDefault();
-    const val = $('#chat-input').value.trim();
-    if (!val) return;
-    state.chatHistory.push({ id: L.uid(), role: 'user', text: val }, { id: L.uid(), role: 'assistant', text: L.answerAIChat(val, state, ui.month, L.todayStr()) });
-    save(); render();
-  } else if (e.target.id === 'profileform') {
-    e.preventDefault();
-    state.profile.name = $('#pname').value.trim() || 'Minh Anh';
-    state.profile.className = ($('#pclass').value.trim() || '10A10').toUpperCase();
-    state.profile.grade = Number($('#pgrade').value) || 10;
-    save(); render(); toast('Đã lưu hồ sơ');
+  if (mode === 'login') {
+    body = `<h2>Đăng nhập</h2>
+      <form id="loginform" novalidate>
+        <label for="lemail">Email</label>
+        <input id="lemail" name="lemail" type="email" autocomplete="email" placeholder="ban@example.com">
+        ${pw('lpw', 'Mật khẩu', 'current-password')}
+        <p class="err" id="autherr" role="alert"></p>
+        <button class="btn primary block" type="submit">Đăng nhập</button>
+      </form>
+      <div style="margin:14px 0;text-align:center;color:var(--mute);font-size:.85rem">hoặc</div>
+      <button type="button" class="btn block" id="google-btn" style="display:flex;align-items:center;justify-content:center">${googleIcon}Đăng nhập với Google</button>
+      <div class="auth-links">
+        <button class="linkbtn" data-auth="forgot">Quên mật khẩu?</button>
+        <button class="linkbtn" data-auth="register">Tạo tài khoản mới</button>
+      </div>`;
+  } else if (mode === 'register') {
+    body = `<h2>Tạo tài khoản đám mây</h2>
+      <p class="sub">Đồng bộ thu chi và ngân sách trên mọi thiết bị của bạn.</p>
+      <form id="regform" novalidate>
+        <label for="rname">Tên hiển thị</label>
+        <input id="rname" name="rname" maxlength="30" autocomplete="nickname" placeholder="VD: Linh">
+        <label for="remail">Email</label>
+        <input id="remail" name="remail" type="email" autocomplete="email" placeholder="ban@example.com">
+        ${pw('rpw', `Mật khẩu (ít nhất ${MIN_PASSWORD} ký tự)`, 'new-password')}
+        ${pw('rpw2', 'Nhập lại mật khẩu', 'new-password')}
+        ${cloudAuth.hasLegacyData() ? '<label class="check"><input type="checkbox" id="keep" checked> Tải dữ liệu cũ trên máy này lên đám mây</label>' : ''}
+        <p class="err" id="autherr" role="alert"></p>
+        <button class="btn primary block" type="submit">Tạo tài khoản</button>
+      </form>
+      <div class="auth-links"><button class="linkbtn" data-auth="login">Đã có tài khoản? Đăng nhập</button></div>`;
+  } else {
+    body = `<h2>Đặt lại mật khẩu</h2>
+      <p class="sub">Nhập email đã đăng ký, FinMate sẽ gửi liên kết đặt lại mật khẩu cho bạn.</p>
+      <form id="forgotform" novalidate>
+        <label for="femail">Email</label>
+        <input id="femail" name="femail" type="email" autocomplete="email" placeholder="ban@example.com">
+        <p class="err" id="autherr" role="alert"></p>
+        <button class="btn primary block" type="submit">Gửi liên kết khôi phục</button>
+      </form>
+      <div class="auth-links"><button class="linkbtn" data-auth="login">Quay lại đăng nhập</button></div>`;
   }
-});
 
-render();
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  authEl.innerHTML = `<div class="auth-box">
+    <div class="auth-brand">${brand}<h1>FinMate</h1><p>Hiểu dòng tiền – Làm chủ tương lai.</p></div>
+    <div class="auth-card">${body}</div>
+    <p class="auth-note">Dữ liệu được lưu trữ an toàn trên đám mây và đồng bộ tự động.</p>
+  </div>`;
+  authEl.querySelector('input:not([type=checkbox])')?.focus({ preventScroll: true });
 }
+
+async function enter(acc, initialLegacyState = null) {
+  account = acc;
+
+  ui = {
+    tab: 'home',
+    plan: 'budget',
+    q: '',
+    month: thisMonth(),
+    recent: [],
+    entered: false,
+    syncStatus: 'syncing',
+  };
+
+  try {
+    // Keep an existing device cache temporarily for migration.
+    let cached = null;
+
+    try {
+      cached = JSON.parse(localStorage.getItem(cacheKey()));
+    } catch {}
+
+    // Always check the account's cloud data first.
+    const cloud = await cloudAuth.loadState(acc.id, L.emptyState);
+
+    if (cloud.exists) {
+      // Cloud data always takes priority.
+      state = L.validateImport(cloud.state);
+      ui.recent = cloud.recent;
+
+    } else if (initialLegacyState || cached?.state) {
+      // Migrate old device data only if the account has no cloud record.
+      state = L.validateImport(
+        initialLegacyState || cached.state
+      );
+
+      ui.recent = cached?.recent || [];
+
+      await cloudAuth.saveState(acc.id, state, ui.recent);
+
+      toast('Đã chuyển dữ liệu lên đám mây');
+    } else {
+      state = L.emptyState();
+      ui.recent = [];
+    }
+
+    // Remove old device cache only after successful cloud loading/migration.
+    if (!cloud.exists && (initialLegacyState || cached?.state)) {
+  localStorage.removeItem(cacheKey());
+}
+
+if (!cloud.exists && initialLegacyState) {
+  localStorage.removeItem('finmate:v1');
+  localStorage.removeItem('finmate:recent');
+}
+
+    ui.syncStatus = 'synced';
+
+    authEl.hidden = true;
+    authEl.innerHTML = '';
+    document.body.classList.remove('locked');
+
+    render();
+    window.scrollTo(0, 0);
+
+  } catch (e) {
+    console.error('Cloud loading failed:', e);
+
+    account = null;
+    state = L.emptyState();
+
+    toast('Không thể tải dữ liệu từ đám mây. Hãy kiểm tra kết nối và thử lại.');
+    throw e;
+  }
+}
+async function leave() {
+  await cloudAuth.logout();
+  account = null;
+  state = L.emptyState();
+  if (dlg.open) dlg.close();
+  $('#toast').hidden = true;
+  $('#view').innerHTML = '';
+  $('#bar').innerHTML = '';
+  showAuth('login');
+}
+
+function passwordSheet() {
+  sheet('Đổi mật khẩu', `${pw('np', `Mật khẩu mới (ít nhất ${MIN_PASSWORD} ký tự)`, 'new-password')}${pw('np2', 'Nhập lại mật khẩu mới', 'new-password')}<p class="err" id="sheeterr" role="alert"></p>`, 'Đổi mật khẩu', (fd) => {
+    const err = $('#sheeterr'), n = fd.get('np');
+    err.textContent = '';
+    if (n !== fd.get('np2')) { err.textContent = 'Hai mật khẩu mới chưa giống nhau.'; return false; }
+    cloudAuth.changePassword(n).then(() => { dlg.close(); toast('Đã đổi mật khẩu'); }).catch((e) => { err.textContent = e.message; });
+    return false;
+  });
+}
+
+authEl.addEventListener('click', async (e) => {
+  const eye = e.target.closest('[data-eye]');
+  if (eye) {
+    const i = authEl.querySelector('#' + eye.dataset.eye);
+    i.type = i.type === 'password' ? 'text' : 'password';
+    eye.textContent = i.type === 'password' ? 'Hiện' : 'Ẩn';
+    return;
+  }
+  if (e.target.closest('#google-btn')) {
+    try {
+      await cloudAuth.loginWithGoogle();
+    } catch (x) {
+      $('#autherr').textContent = x.message;
+    }
+    return;
+  }
+  const m = e.target.closest('[data-auth]');
+  if (m) showAuth(m.dataset.auth);
+});
+
+authEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('#autherr'), btn = e.target.querySelector('button[type=submit]');
+  err.textContent = '';
+  btn.disabled = true;
+
+  try {
+    if (e.target.id === 'loginform') {
+      const acc = await cloudAuth.login($('#lemail').value, $('#lpw').value);
+      await enter(acc);
+    } else if (e.target.id === 'regform') {
+      const name = $('#rname').value, email = $('#remail').value, pw1 = $('#rpw').value, pw2 = $('#rpw2').value;
+      const msg = validateNewAccount(name, email, pw1, pw2);
+      if (msg) throw new Error(msg);
+
+      let legacy = null;
+      if ($('#keep')?.checked && cloudAuth.hasLegacyData()) {
+        try { legacy = L.validateImport(JSON.parse(localStorage.getItem('finmate:v1'))); } catch {}
+      }
+      const acc = await cloudAuth.register({ name, email, password: pw1 });
+      await enter(acc, legacy);
+    } else if (e.target.id === 'forgotform') {
+      await cloudAuth.resetPassword($('#femail').value);
+      toast('Đã gửi email đặt lại mật khẩu!');
+      showAuth('login');
+    }
+  } catch (x) {
+    err.textContent = x.message;
+    btn.disabled = false;
+  }
+});
+
+async function boot() {
+  const acc = await cloudAuth.currentUser();
+  if (acc) await enter(acc);
+  else showAuth('login');
+}
+boot();
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
