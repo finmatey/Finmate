@@ -1,4 +1,19 @@
-{ "name": "FinMate", "short_name": "FinMate", "description": "Ghi chép thu chi, ngân sách và mục tiêu tiết kiệm.",
-  "start_url": "./index.html", "scope": "./", "display": "standalone", "lang": "vi",
-  "background_color": "#F7F8F5", "theme_color": "#183C35",
-  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }] }
+{
+  "name": "FinMate",
+  "short_name": "FinMate",
+  "description": "Quản lý chi tiêu, đa ví, hũ tiết kiệm, FinPoints và Trợ lý AI cho học sinh.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "lang": "vi",
+  "background_color": "#F7F8F5",
+  "theme_color": "#183C35",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
