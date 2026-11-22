@@ -429,3 +429,7 @@ html.dark .lb-badge{color:#F7E7A8}
 @keyframes warn-in{from{opacity:0;transform:scale(.96)}}
 @keyframes warn-shake{0%,100%{transform:translateX(0)}15%{transform:translateX(-7px)}30%{transform:translateX(6px)}45%{transform:translateX(-5px)}60%{transform:translateX(4px)}75%{transform:translateX(-2px)}}
 @media (prefers-reduced-motion:reduce){.warn-box{animation:none}#warn[open]{animation:none}}
+.lb-locked{background:var(--bg);border:1.5px dashed var(--line);border-radius:var(--r-lg);padding:24px 18px;text-align:center;display:grid;gap:8px;justify-items:center}
+.lb-lock-ico{width:48px;height:48px;border-radius:50%;background:var(--secondary);display:grid;place-items:center;font-size:1.35rem}
+.lb-locked h3{margin:0;font-size:1.05rem;font-weight:800;color:var(--ink)}
+.lb-locked p{margin:0;font-size:.86rem;color:var(--mute);max-width:40ch}
