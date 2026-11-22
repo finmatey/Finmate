@@ -275,16 +275,11 @@ function rewards() {
 function assistant() {
   const today = L.todayStr(), fc = L.generateForecast(state.transactions, state.budgets, ui.month, today), cmp = L.buildComparisonReport(state.transactions, state.categories, ui.month);
   const chat = state.chatHistory.length ? state.chatHistory : [{ role: 'assistant', text: `Chào ${displayName()}! Hỏi mình về chi tiêu ăn uống, dự báo ngày hết tiền hoặc chia ngân sách tự động nhé.` }];
-  return `<section class="card premium"><div><h2>👑 ${state.isPremium ? 'FinMate Premium HSSV đang bật' : 'FinMate Premium · 179.000 ₫/tháng (ưu đãi HSSV 49k)'}</h2><p>Đồng bộ ngân hàng Casso/SePay, chatbot tư vấn sâu, báo cáo 12 tháng & không quảng cáo.</p></div>
-      <button class="btn ${state.isPremium ? '' : 'primary'}" data-act="togglepremium">${state.isPremium ? 'Đang dùng Premium' : 'Trải nghiệm Premium'}</button></section>
-    ${state.isPremium ? '' : '<div class="ad">Quảng cáo bản Free: Giảm 20% dụng cụ học tập cho học sinh Mạc Đĩnh Chi.</div>'}
-    <section class="card"><h2>✨ Chatbot tư vấn tài chính</h2>
+  return `<section class="card"><h2>✨ Chatbot tư vấn tài chính</h2>
       <div class="chat-log" id="chat-log" aria-live="polite">${chat.map((m) => `<div class="msg ${m.role === 'user' ? 'user' : 'bot'}">${esc(m.text)}</div>`).join('')}</div>
       <div class="chips"><button type="button" class="chip" data-prompt="Tháng này mình tiêu nhiều vào ăn uống quá, làm sao để bớt?">Bớt tiền ăn uống?</button><button type="button" class="chip" data-prompt="Dự báo cuối tháng mình có hết tiền không?">Dự báo cuối tháng</button><button type="button" class="chip" data-prompt="Gợi ý chia ngân sách tự động">Chia ngân sách AI</button></div>
       <form id="chatform" class="chatform"><input id="chat-input" type="text" placeholder="Hỏi trợ lý AI..." aria-label="Nhập câu hỏi" autocomplete="off"><button type="submit" class="btn primary">Gửi</button></form></section>
     <section class="card"><h2>📈 Dự báo dòng tiền</h2><div class="fc-pair"><div><small>Tiêu mỗi ngày</small><b class="num">${vnd(fc.dailyBurnRate)}</b></div><div><small>Dự kiến cả tháng</small><b class="num">${vnd(fc.projectedMonthEndSpend)}</b></div></div><p class="fc-note">${esc(fc.summaryText)}</p></section>
-    <section class="card"><h2>🏦 Tích hợp ngân hàng (${esc(state.bankSync.provider)}) · bản mô phỏng</h2><p>${esc(state.bankSync.bankName)} (${esc(state.bankSync.accountMask)}) · Đồng bộ lúc ${esc(state.bankSync.lastSyncedAt)}</p>
-      <button class="btn primary block" style="margin-top:12px" data-act="banksync">↻ Đồng bộ giao dịch ngân hàng ngay</button></section>
     <section class="sec"><div class="sec-head"><h2>Báo cáo ${ui.trendRange} tháng</h2><div class="rng"><button class="btn sm ${ui.trendRange === 6 ? 'primary' : ''}" data-range="6">6 tháng</button><button class="btn sm ${ui.trendRange === 12 ? 'primary' : ''}" data-range="12">12 tháng</button></div></div>${flowChart(ui.trendRange)}</section>
     <section class="card"><h2>So sánh với tháng trước</h2><p>${monthLabel(ui.month)} so với ${monthLabel(cmp.prevMonth)}</p>
       ${cmp.rows.length ? `<div class="tbl"><table><thead><tr><th>Danh mục</th><th>Tháng trước</th><th>Tháng này</th><th>Chênh</th></tr></thead><tbody>${cmp.rows.map((r) => `<tr><td>${r.icon} ${esc(cat(r.id).name)}</td><td class="num">${vnd(r.prevVal)}</td><td class="num"><b>${vnd(r.currentVal)}</b></td><td class="num ${r.diff > 0 ? 'neg' : 'pos'}">${r.diff > 0 ? '+' : ''}${r.diffPct}%</td></tr>`).join('')}</tbody></table></div>` : '<p style="margin-top:10px">Chưa có chi tiêu ở hai tháng này để so sánh.</p>'}
@@ -497,7 +492,6 @@ const actions = {
   gojars: () => { ui.tab = 'plan'; ui.plan = 'goals'; render(); window.scrollTo(0, 0); },
   gorewards: () => go('rewards'),
   toggledark: () => { state.darkMode = !state.darkMode; save(); render(); },
-  togglepremium: () => { state.isPremium = !state.isPremium; save(); render(); },
   checkin: () => {
     const today = L.todayStr(), r = L.computeCheckIn(state.lastCheckInDate, state.streakDays, today); if (!r) return;
     state.streakDays = r.streakDays; state.lastCheckInDate = today; award(r.points, `Điểm danh ngày ${r.streakDays}`);
@@ -527,11 +521,6 @@ const actions = {
       const ex = state.budgets.find((b) => b.categoryId === e.categoryId); if (ex) ex.limit = e.limit; else state.budgets.push({ id: L.uid(), ...e });
     }
     save(); render(); toast('Đã áp dụng ngân sách AI', { label: 'Hoàn tác', run: () => { state.budgets = before; save(); render(); } });
-  },
-  banksync: () => {
-    const tpl = L.BANK_SYNC_FEED[state.transactions.filter((t) => t.source === 'bank-sync').length % L.BANK_SYNC_FEED.length], today = L.todayStr();
-    const alloc = addTxn({ ...tpl, id: L.uid(), date: today }); state.bankSync.lastSyncedAt = `${today} ${new Date().toTimeString().slice(0, 5)}`;
-    save(); render(); toast(`Đã đồng bộ giao dịch ${vnd(tpl.amount)}${alloc ? ` · tự trích ${vnd(alloc)} vào hũ` : ''}`);
   },
   loaddemo: () => { if (confirm('Thay TOÀN BỘ dữ liệu hiện tại bằng dữ liệu mẫu? Bạn nên sao lưu (JSON) trước.')) { const keep = { profile: state.profile, darkMode: state.darkMode }; state = { ...L.createSeedState(), ...keep }; ui.recent = []; save(); render(); toast('Đã nạp dữ liệu mẫu'); } },
   delbudget: (id) => { const i = state.budgets.findIndex((b) => b.id === id), [gone] = state.budgets.splice(i, 1); save(); render();

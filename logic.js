@@ -36,12 +36,6 @@ export const LEADERBOARD_PEERS = [
   { id: 'p6', name: 'Tuấn Kiệt', className: '11A8', grade: 11, savedThisMonth: 390_000, savingsRatePct: 21, streakDays: 7 },
 ];
 
-export const BANK_SYNC_FEED = [
-  { type: 'expense', amount: 32_000, categoryId: 'food', walletId: 'bank', note: 'QR Pay Cơm tấm cổng sau MĐC (Casso)', source: 'bank-sync' },
-  { type: 'expense', amount: 45_000, categoryId: 'milktea', walletId: 'bank', note: 'MoMo/TPBank - Trà sữa Matcha đá xay', source: 'bank-sync' },
-  { type: 'income', amount: 200_000, categoryId: 'parttime', walletId: 'bank', note: 'CK Phụ huynh em An - Gia sư Toán', source: 'bank-sync' },
-];
-
 export const DEFAULT_PROFILE = { name: '', className: '10A10', grade: 10, school: 'THPT Mạc Đĩnh Chi' };
 
 export const formatVND = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n)) + ' ₫';
@@ -103,9 +97,9 @@ export function toCSV(transactions, categories, wallets = DEFAULT_WALLETS) {
 export function emptyState() {
   return {
     version: 2, transactions: [], categories: DEFAULT_CATEGORIES, budgets: [], goals: [],
-    profile: { ...DEFAULT_PROFILE }, darkMode: false, isPremium: false, wallets: DEFAULT_WALLETS.map((w) => ({ ...w })), debts: [],
+    profile: { ...DEFAULT_PROFILE }, darkMode: false, wallets: DEFAULT_WALLETS.map((w) => ({ ...w })), debts: [],
     finPoints: 0, streakDays: 0, lastCheckInDate: '', weeklyBudgetBonusClaimedWeek: '', pointHistory: [], redeemedVouchers: [],
-    bankSync: { bankName: 'TPBank Live', provider: 'Casso', accountMask: '•••• 4829', lastSyncedAt: 'Chưa đồng bộ' }, chatHistory: [],
+    chatHistory: [],
   };
 }
 
@@ -116,14 +110,14 @@ export function normalizeState(data) {
   for (const c of DEFAULT_CATEGORIES) if (!categories.some((x) => x.id === c.id)) categories.push(c);
   const wallets = arr(data.wallets, []).length ? data.wallets : base.wallets;
   const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
+  const { bankSync: _b, isPremium: _p, ...clean } = data; // legacy fields from removed features
   return {
-    ...base, ...data,
+    ...base, ...clean,
     categories, wallets,
     transactions: arr(data.transactions, []), budgets: arr(data.budgets, []), goals: arr(data.goals, []).map((g) => ({ ...g, contributions: arr(g.contributions, []) })),
     debts: arr(data.debts, []), pointHistory: arr(data.pointHistory, []), redeemedVouchers: arr(data.redeemedVouchers, []), chatHistory: arr(data.chatHistory, []),
     profile: { ...DEFAULT_PROFILE, ...(data.profile && typeof data.profile === 'object' ? data.profile : {}) },
-    bankSync: { ...base.bankSync, ...(data.bankSync && typeof data.bankSync === 'object' ? data.bankSync : {}) },
-    darkMode: Boolean(data.darkMode), isPremium: Boolean(data.isPremium),
+    darkMode: Boolean(data.darkMode),
     finPoints: num(data.finPoints), streakDays: num(data.streakDays),
     lastCheckInDate: typeof data.lastCheckInDate === 'string' ? data.lastCheckInDate : '',
     weeklyBudgetBonusClaimedWeek: typeof data.weeklyBudgetBonusClaimedWeek === 'string' ? data.weeklyBudgetBonusClaimedWeek : '',
@@ -377,7 +371,6 @@ export function createSeedState(now = new Date()) {
       { id: 'p3', title: 'Đổi voucher Bánh mì Sáng', points: -45, date: d(6) },
     ],
     redeemedVouchers: [{ id: 'rv1', merchant: 'Bánh Mì & Sữa Đậu Nành Sáng', title: 'Giảm 10.000 ₫ hóa đơn từ 25.000 ₫', discountLabel: '-10k Ăn sáng', code: 'FM-MDC-8421', redeemedAt: d(6), used: false }],
-    bankSync: { bankName: 'TPBank Live', provider: 'Casso', accountMask: '•••• 4829', lastSyncedAt: `${today} 07:30` },
   });
 }
 

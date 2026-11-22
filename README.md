@@ -21,7 +21,7 @@ Added from the FinMate HTML/CSS/JS version:
 - **Multi-wallet** (cash, bank, MoMo, ZaloPay): pick a wallet per transaction, filter by wallet, transfer between wallets (transfers don't count as income/expense), set opening balances.
 - **Saving jars**: goals can auto-allocate a % of every new income; quick +100k / +250k; edit goals; completion bonus.
 - **Friends' debt ledger** (Plan -> Sổ nợ): lend/borrow, settle (books the money into the wallet), totals.
-- **AI assistant tab**: insights, chatbot, forecast of the day you run out of money, month-over-month comparison, 6/12-month report, simulated bank sync, Premium toggle.
+- **AI assistant tab**: insights, chatbot, forecast of the day you run out of money, month-over-month comparison, 6/12-month report.
 - **AI auto budget** (Plan -> Ngân sách): splits income into category budgets (merges with yours, with undo).
 - **Rewards tab**: daily check-in streak, weekly budget bonus, FinPoints history, vouchers with QR, savings leaderboard.
 - **Dark mode**, student profile (class/grade/school), "load demo data" in Settings.

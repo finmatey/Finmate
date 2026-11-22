@@ -318,9 +318,6 @@ body.locked .nav,body.locked .fab,body.locked .stage{display:none}
 .qr .code{display:block;font-size:1.1rem;color:var(--ink)}
 
 /* ---------- AI assistant ---------- */
-.premium{background:var(--lavender);border-color:transparent;display:grid;gap:12px;margin-top:0}
-.premium p{color:var(--ink);opacity:.75}
-.ad{margin-top:12px;padding:12px 18px;background:var(--tertiary);border-radius:var(--r-md);font-size:.84rem;font-weight:700;color:#183C35}
 .chat-log{display:grid;gap:8px;max-height:280px;overflow-y:auto;margin:12px 0;padding:2px}
 .msg{padding:10px 14px;border-radius:18px;font-size:.9rem;max-width:88%;white-space:pre-line;line-height:1.45}
 .msg.bot{background:var(--secondary);border-bottom-left-radius:6px;justify-self:start}
@@ -370,7 +367,6 @@ html.dark .strip i.future::before{background:rgba(255,255,255,.06)}
 html.dark .strip i.today::before{background:var(--tertiary);box-shadow:0 0 0 2.5px var(--primary)}
 html.dark .reward-banner{background:#1B3F33}
 html.dark .streak-pill.on,html.dark .btn.gold{background:#F7E7A8;color:#183C35}
-html.dark .ad{background:var(--tertiary);color:#F7E7A8}
 html.dark .ai-rows .tot{border-top-color:rgba(255,255,255,.16)}
 html.dark .qr .qrbox{background:#fff}
 html.dark .meter .trk{stroke:var(--secondary)}
