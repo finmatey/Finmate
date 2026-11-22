@@ -411,3 +411,8 @@ html.dark .lb-badge{color:#F7E7A8}
 /* ---------- low balance warning ---------- */
 .lowbal{display:flex;gap:12px;align-items:flex-start;margin:0 0 12px;padding:14px 16px;background:var(--peach);color:var(--ink);border-left:6px solid var(--err);border-radius:var(--r-lg);font-size:.92rem;line-height:1.45}
 .lowbal-w{margin-top:4px;font-weight:600}
+
+/* ---------- hero view switch ---------- */
+.hero-toggle{display:flex;gap:4px;padding:4px;margin:0 0 6px;border-radius:99px;background:var(--surface);border:1px solid var(--line)}
+.hero-toggle button{flex:1;border:0;background:transparent;color:var(--primary);font:inherit;font-size:.84rem;font-weight:700;padding:8px 10px;min-height:40px;border-radius:99px;cursor:pointer}
+.hero-toggle button[aria-pressed=true]{background:var(--tertiary);color:#183C35}

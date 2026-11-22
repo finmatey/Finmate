@@ -4,7 +4,7 @@ import * as LB from './leaderboard.js';
 
 let account = null, state = L.emptyState();
 const thisMonth = () => L.monthKey(L.todayStr());
-const freshUi = (syncStatus = 'synced') => ({ tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus, walletFilter: 'all', boardScope: 'grade', trendRange: 6, lastWallet: 'cash' });
+const freshUi = (syncStatus = 'synced') => ({ tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus, walletFilter: 'all', heroView: 'goals', boardScope: 'grade', trendRange: 6, lastWallet: 'cash' });
 let ui = freshUi();
 
 const cacheKey = () => `finmate:cache:${account?.id}`;
@@ -154,7 +154,11 @@ function home() {
   const overall = state.budgets.find((b) => b.categoryId === null);
   const al = overall ? L.dailyAllowance(overall.limit, s.expense, ui.month, today) : null;
   let label, num, numCls = '', sub, sub2 = '';
-  if (overall) {
+  if (ui.heroView === 'balance') {
+    const st = L.lowBalanceStatus(state.wallets, state.transactions);
+    label = 'Số dư còn lại (tất cả ví)'; num = (st.current < 0 ? '−' : '') + vnd(Math.abs(st.current)); numCls = st.low ? 'over' : '';
+    sub = st.initial > 0 ? `Số dư ban đầu: ${vnd(st.initial)} · còn ${st.pct < 0 ? 'âm' : st.pct + '%'}` : 'Nhập "Số dư đầu" ở tab Giao dịch để theo dõi phần trăm còn lại.';
+  } else if (overall) {
     const remaining = overall.limit - s.expense, over = remaining < 0;
     label = over ? 'Bạn đã vượt ngân sách' : 'Ngân sách còn lại'; num = (over ? '−' : '') + vnd(Math.abs(remaining)); numCls = over ? 'over' : '';
     sub = `Ngân sách bạn đặt: ${vnd(overall.limit)}`;
@@ -178,6 +182,7 @@ function home() {
   const quick = `<section class="sec"><div class="sec-head"><h2>Thêm nhanh</h2></div><div class="quick">${quickIds.map((id, i) => `<button class="q" data-act="addcat" data-id="${id}"><span class="qc" style="--t:${tints[i]}">${cat(id).icon}</span><small>${esc(cat(id).name)}</small></button>`).join('')}</div></section>`;
   const html = `<section class="hero" aria-label="Tóm tắt tháng">${badge}
     <p class="hero-label">${label}</p><p class="hero-num num ${numCls}">${num}</p><div class="hero-subs"><p class="hero-sub">${sub}</p>${sub2 ? `<p class="hero-sub2">${sub2}</p>` : ''}</div>
+    <div class="hero-toggle" role="group" aria-label="Chế độ hiển thị">${[['balance', 'Số dư còn lại'], ['goals', 'Mục tiêu chi tiêu']].map(([v, t]) => `<button type="button" aria-pressed="${ui.heroView === v}" data-act="heroview" data-id="${v}">${t}</button>`).join('')}</div>
     <div class="strip ${ui.entered ? '' : 'enter'}" role="img" aria-label="Chi tiêu từng ngày trong tháng">${strip}</div>
     <div class="axis"><span>1</span><span>${Math.ceil(n / 2)}</span><span>${n}</span></div>
     <div class="hero-actions"><button class="btn primary" data-act="add">Thêm chi tiêu</button><button class="btn tonal" data-act="${overall ? 'editbudget' : 'addbudget'}"${overall ? ` data-id="${overall.id}"` : ''}>${overall ? 'Sửa ngân sách' : 'Đặt ngân sách'}</button></div></section>
@@ -474,6 +479,7 @@ const actions = {
   transfer: () => transferSheet(), editwallets: () => walletsSheet(), adddebt: () => debtSheet(),
   gojars: () => { ui.tab = 'plan'; ui.plan = 'goals'; render(); window.scrollTo(0, 0); },
   gorewards: () => go('rewards'),
+  heroview: (v) => { ui.heroView = v === 'balance' ? 'balance' : 'goals'; render(); },
   toggledark: () => { state.darkMode = !state.darkMode; save(); render(); },
   settledebt: (id) => {
     const d = state.debts.find((x) => x.id === id); if (!d || d.settled) return; d.settled = true;
