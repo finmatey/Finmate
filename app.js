@@ -10,11 +10,14 @@ let ui = freshUi();
 const cacheKey = () => `finmate:cache:${account?.id}`;
 let syncTimer = null;
 
-const claimQueue = new Set(), triedGoals = new Set();
-function runClaims() {
-  const q = [...claimQueue]; claimQueue.clear();
-  if (!q.length) return;
-  Promise.all(q.map((c) => (c === 'week' ? LB.claimBudgetWeek() : LB.claimGoal(c.slice(5))))).then(() => LB.refreshLeaderboard());
+const goalQueue = new Set(), triedGoals = new Set();
+function queueDoneGoals(all) {
+  if (all) triedGoals.clear();
+  state.goals.filter((g) => L.goalPct(g) >= 100 && !triedGoals.has(g.id)).forEach((g) => { triedGoals.add(g.id); goalQueue.add(g.id); });
+}
+function runGoalClaims() {
+  const q = [...goalQueue]; goalQueue.clear();
+  if (q.length) Promise.all(q.map((id) => LB.claimGoal(id))).then(() => LB.refreshLeaderboard());
 }
 function save() {
   if (!account) return;
@@ -39,7 +42,7 @@ function save() {
       if (account?.id !== userId) return;
 
       ui.syncStatus = 'synced';
-      runClaims();
+      queueDoneGoals(); runGoalClaims();
       if (ui.tab === 'settings') render();
 
     } catch (e) {
@@ -67,7 +70,6 @@ const cat = (id) => { const c = state.categories.find((x) => x.id === id) || { n
 const wallet = (id) => state.wallets.find((w) => w.id === id) || state.wallets[0];
 const displayName = () => state.profile.name || account?.name || 'Bạn';
 const applyTheme = () => { const dark = Boolean(account && state.darkMode); document.documentElement.classList.toggle('dark', dark); document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#101714' : '#F7F8F5'); };
-function award(points, title) { state.finPoints = Math.max(0, state.finPoints + points); state.pointHistory.unshift({ id: L.uid(), title, points, date: L.todayStr() }); state.pointHistory = state.pointHistory.slice(0, 60); }
 function addTxn(t) {
   state.transactions.push(t);
   if (t.type !== 'income' || t.transfer) return 0;
@@ -76,7 +78,7 @@ function addTxn(t) {
 function contribute(id, amount) {
   const g = state.goals.find((x) => x.id === id); if (!g) return null;
   const was = L.goalPct(g) >= 100; g.contributions.push({ amount, date: L.todayStr() });
-  const done = !was && L.goalPct(g) >= 100; if (done) { award(50, `Hoàn thành mục tiêu ${g.name}`); claimQueue.add(`goal:${g.id}`); }
+  const done = !was && L.goalPct(g) >= 100; if (done) { goalQueue.add(g.id); triedGoals.add(g.id); }
   save(); render(); toast(done ? `Hoàn thành "${g.name}"! +50 FinPoints` : `Đã góp ${vnd(amount)}`); return g;
 }
 const monthLabel = (m) => `Tháng ${Number(m.slice(5))}/${m.slice(0, 4)}`;
@@ -168,8 +170,7 @@ function home() {
   const daysLeftBadge = ui.month === thisMonth() ? n - Number(today.slice(8)) + 1 : 0;
   const badge = daysLeftBadge ? `<svg class="badge" viewBox="0 0 100 100" role="img" aria-label="Còn ${daysLeftBadge} ngày trong tháng"><path d="${cookie(50, 50, 42, 10, 4)}" fill="#F7E7A8"/><text x="50" y="55" text-anchor="middle" font-size="30" font-weight="800" fill="#183C35">${daysLeftBadge}</text><text x="50" y="71" text-anchor="middle" font-size="11" font-weight="700" fill="#183C35">ngày</text></svg>` : '';
   const quickIds = [...ui.recent.filter((id) => cat(id).type === 'expense'), ...state.categories.filter((c) => c.type === 'expense').map((c) => c.id)].filter((id, i, arr) => arr.indexOf(id) === i && state.categories.some((c) => c.id === id)).slice(0, 5);
-  const checkedIn = state.lastCheckInDate === today, streak = L.activeStreak(state.lastCheckInDate, state.streakDays, today);
-  const streakCard = `<section class="streak" aria-label="Chuỗi ghi chép"><div><small>Chuỗi ghi chép · ${state.finPoints} FinPoints</small><b>🔥 ${streak} ngày liên tục</b></div><button class="btn ${checkedIn ? 'tonal' : 'primary'}" data-act="${checkedIn ? 'gorewards' : 'checkin'}">${checkedIn ? 'Đổi quà' : `Điểm danh +${L.CHECKIN_POINTS}đ`}</button></section>`;
+  const streakCard = `<section class="streak" aria-label="Điểm danh và bảng xếp hạng"><div><small>Điểm danh · Bảng xếp hạng</small><b>🏆 FinPoints</b></div><button class="btn primary" data-act="gorewards">Mở</button></section>`;
   const insights = L.generateAIInsights(state.transactions, state.categories, state.budgets, ui.month, today).slice(0, 3);
   const insightsSec = `<section class="sec"><div class="sec-head"><h2>✨ Gợi ý từ Trợ lý AI</h2><button class="linkbtn" data-tab-go="assistant">Hỏi AI</button></div><div class="insights">${insights.map((i) => `<div class="insight ${i.tone}"><b>${esc(i.title)}</b><span>${esc(i.message)}</span></div>`).join('')}</div></section>`;
   const goalsSec = state.goals.length ? `<section class="sec"><div class="sec-head"><h2>Hũ tiết kiệm</h2><button class="linkbtn" data-act="gojars">Quản lý hũ</button></div>${state.goals.slice(0, 3).map((g) => { const pct = L.goalPct(g); return `<article class="card mini-goal"><div class="mg-top"><b>${g.icon || '🎯'} ${esc(g.name)}</b><span class="num">${pct}%</span></div>${meter(pct)}<div class="plan-foot num"><span>${L.compactVND(L.goalSaved(g))} / ${L.compactVND(g.target)}</span><span>${g.autoAllocatePct ? `Tự trích ${g.autoAllocatePct}%` : 'Thủ công'}</span></div></article>`; }).join('')}</section>` : '';
@@ -205,6 +206,13 @@ function txListHtml() {
   return `<div class="list">${Object.entries(groups).map(([d, items]) => {
     const net = items.reduce((a, t) => a + (t.type === 'income' ? t.amount : -t.amount), 0);
     return `<div class="day"><span>${q ? d.split('-').reverse().join('/') : dayLabel(d)}</span><span class="num">${net > 0 ? '+' : net < 0 ? '−' : ''}${vnd(Math.abs(net))}</span></div>${items.map(txRow).join('')}`; }).join('')}</div>`;
+}
+function lowBalanceBanner() {
+  const st = L.lowBalanceStatus(state.wallets, state.transactions);
+  if (!st.low && !st.lowWallets.length) return '';
+  const head = st.low ? `Số dư chỉ còn <b class="num">${vnd(st.current)}</b> (${st.pct < 0 ? 'âm' : st.pct + '%'} so với số dư ban đầu ${vnd(st.initial)}). Hãy cân nhắc giảm chi tiêu.` : '';
+  const wl = st.lowWallets.length ? `<div class="lowbal-w">Ví sắp hết: ${st.lowWallets.map((w) => `${esc(w.name)} (${vnd(w.balance)})`).join(', ')}</div>` : '';
+  return `<div class="lowbal" role="alert"><span aria-hidden="true">⚠️</span><div>${head}${wl}</div></div>`;
 }
 function walletStrip() {
   const bal = L.computeWalletBalances(state.wallets, state.transactions), total = Object.values(bal).reduce((a, b) => a + b, 0);
@@ -256,20 +264,7 @@ function debtsHtml() {
 }
 
 function rewards() {
-  const today = L.todayStr(), s = L.summarize(state.transactions, ui.month), checkedIn = state.lastCheckInDate === today;
-  const overall = state.budgets.find((b) => b.categoryId === null), underBudget = !overall || s.expense <= overall.limit;
-  const wk = L.currentWeekKey(today), weekClaimed = state.weeklyBudgetBonusClaimedWeek === wk;
-  const streak = L.activeStreak(state.lastCheckInDate, state.streakDays, today);
-  const saved = Math.max(0, s.balance), rate = s.income > 0 ? Math.round((saved / s.income) * 100) : 0, pr = state.profile;
-  return `<section class="reward-banner"><small>Điểm thưởng tích lũy</small><div class="pts num">${state.finPoints} <span>FinPoints</span></div>
-      <p>Chuỗi ${streak} ngày · Đổi voucher quanh ${esc(pr.school)}</p>
-      <div class="streak-row">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<div class="streak-pill ${n <= streak ? 'on' : ''}">N${n}</div>`).join('')}</div>
-      <div class="row-actions" style="margin-top:14px"><button class="btn gold" ${checkedIn ? 'disabled' : ''} data-act="checkin">${checkedIn ? 'Đã điểm danh hôm nay' : `Điểm danh +${L.CHECKIN_POINTS} FinPoints`}</button>
-      <button class="btn ghost" ${weekClaimed || !underBudget ? 'disabled' : ''} data-act="claimweek">${weekClaimed ? 'Đã nhận thưởng tuần' : underBudget ? 'Thưởng giữ ngân sách +50đ' : 'Đang vượt ngân sách'}</button></div></section>
-    <section class="card"><h2>Lịch sử FinPoints</h2>${state.pointHistory.length ? state.pointHistory.slice(0, 6).map((p) => `<div class="hist"><span>${esc(p.title)}</span><b class="num ${p.points >= 0 ? 'pos' : 'neg'}">${p.points >= 0 ? '+' : ''}${p.points}đ</b></div>`).join('') : '<p>Điểm danh hoặc hoàn thành hũ tiết kiệm để nhận FinPoints đầu tiên.</p>'}</section>
-    <section class="sec"><div class="sec-head"><h2>Đối tác quanh trường Mạc Đĩnh Chi</h2></div><div class="vouchers">${L.MAC_DINH_CHI_VOUCHERS.map((v) => `<article class="card voucher" style="--acc:${v.accent}"><p>${esc(v.merchant)}</p><h3>${esc(v.title)}</h3><div class="v-foot"><b class="num">${v.costPoints} FinPoints</b><button class="btn primary sm" ${state.finPoints < v.costPoints ? 'disabled' : ''} data-act="redeem" data-id="${v.id}">Đổi lấy mã QR</button></div></article>`).join('')}</div></section>
-    ${state.redeemedVouchers.length ? `<section class="card"><h2>Voucher của tôi</h2>${state.redeemedVouchers.map((rv) => `<div class="hist"><div><b>${esc(rv.discountLabel)}</b> · ${esc(rv.merchant)}<div class="code">${esc(rv.code)}</div></div><button class="btn sm" data-act="openqr" data-id="${rv.id}">Mở mã QR</button></div>`).join('')}</section>` : ''}
-    <section class="card lb" id="lb-root" aria-live="polite"><p class="lb-empty">Đang tải bảng xếp hạng…</p></section>`;
+  return '<section class="card lb" id="lb-root" aria-live="polite"><p class="lb-empty">Đang tải bảng xếp hạng…</p></section>';
 }
 
 function assistant() {
@@ -302,15 +297,13 @@ function settings() {
     <div class="row-actions"><button class="btn primary" data-act="toggledark">${state.darkMode ? 'Bật Chế độ Sáng' : 'Bật Chế độ Tối'}</button></div></section>
   <form class="card" id="profileform"><h2>🎓 Hồ sơ học sinh</h2><p>Dùng cho bảng xếp hạng và voucher quanh trường.</p>
     <label for="pname">Tên hiển thị</label><input id="pname" maxlength="30" value="${esc(state.profile.name || account.name)}">
-    <label for="pclass">Lớp</label><input id="pclass" maxlength="10" value="${esc(state.profile.className)}">
-    <label for="pgrade">Khối</label><select id="pgrade">${[10, 11, 12].map((g) => `<option value="${g}" ${state.profile.grade === g ? 'selected' : ''}>Khối ${g}</option>`).join('')}</select>
-    <label for="pschool">Trường</label><input id="pschool" maxlength="60" value="${esc(state.profile.school)}">
+    <label for="pclass">Lớp</label><input id="pclass" maxlength="10" placeholder="Nhập lớp" value="${esc(state.profile.className)}">
+    <label for="pgrade">Khối</label><select id="pgrade"><option value="0" ${state.profile.grade ? '' : 'selected'}>Chưa chọn</option>${[10, 11, 12].map((g) => `<option value="${g}" ${state.profile.grade === g ? 'selected' : ''}>Khối ${g}</option>`).join('')}</select>
+    <label for="pschool">Trường</label><input id="pschool" maxlength="60" placeholder="Nhập trường" value="${esc(state.profile.school)}">
     <button type="submit" class="btn primary block">Lưu hồ sơ</button></form>
   <section class="card"><h2>Sao lưu & xuất dữ liệu</h2><p>Dữ liệu tự động đồng bộ trên mọi thiết bị của bạn. Bạn cũng có thể tải bản sao lưu thủ công bất cứ lúc nào.</p>
     <div class="row-actions"><button class="btn primary" data-act="exportjson">Sao lưu (JSON)</button><button class="btn" data-act="exportcsv">Xuất CSV</button><button class="btn" data-act="import">Khôi phục từ file</button><button class="btn" data-act="editwallets">Số dư ví ban đầu</button></div>
     <input id="file" type="file" accept="application/json" hidden></section>
-  <section class="card"><h2>Dữ liệu mẫu</h2><p>Muốn xem FinMate khi đã có dữ liệu? Nạp bộ dữ liệu mẫu (giao dịch 6 tháng, 4 ví, hũ tiết kiệm, sổ nợ). Dữ liệu hiện tại sẽ bị thay thế.</p>
-    <div class="row-actions"><button class="btn" data-act="loaddemo">Nạp dữ liệu mẫu</button></div></section>
   <section class="card"><h2>Quyền riêng tư</h2><p>FinMate không hỏi mật khẩu ngân hàng và không giữ tiền. Dữ liệu tài chính của bạn được bảo vệ theo tài khoản cá nhân trên đám mây.</p>
     <div class="row-actions"><button class="btn danger" data-act="wipe">Xóa toàn bộ dữ liệu của tôi</button></div></section>`;
 }
@@ -322,14 +315,12 @@ function render() {
   const [title, fn, monthly] = SCREENS[ui.tab];
   const showMonth = monthly || (ui.tab === 'plan' && ui.plan === 'budget');
   $('#bar').innerHTML = `<h1>${title}</h1>${showMonth ? `<div class="pill"><button data-act="mprev" aria-label="Tháng trước">‹</button><b>${monthLabel(ui.month)}</b><button data-act="mnext" aria-label="Tháng sau">›</button></div>` : ''}`;
-  $('#view').innerHTML = fn();
+  $('#view').innerHTML = (ui.tab === 'home' || ui.tab === 'tx' ? lowBalanceBanner() : '') + fn();
   const cl = $('#chat-log'); if (cl) cl.scrollTop = cl.scrollHeight;
   const lbEl = $('#lb-root');
   if (lbEl) {
-    const tdy = L.todayStr();
-    state.goals.filter((g) => L.goalPct(g) >= 100 && !triedGoals.has(g.id)).forEach((g) => { triedGoals.add(g.id); claimQueue.add(`goal:${g.id}`); });
-    if (ui.syncStatus === 'synced') runClaims();
-    LB.mountLeaderboard(lbEl, { claimToday: state.lastCheckInDate === tdy });
+    queueDoneGoals(true); if (ui.syncStatus === 'synced') runGoalClaims();
+    LB.mountLeaderboard(lbEl, { userId: account.id, toast, isSynced: () => ui.syncStatus === 'synced' });
   }
   const tb = $('#theme-state'); if (tb) tb.textContent = state.darkMode ? 'Bật' : 'Tắt';
   document.querySelectorAll('#nav [data-tab]').forEach((b) => { if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
@@ -465,14 +456,6 @@ function debtSheet() {
   wireMoney('amount');
   dlg.querySelector('#who').focus();
 }
-function qrSheet(rv) {
-  const cells = Array.from({ length: 49 }, (_, i) => ((i * 7 + rv.code.charCodeAt(i % rv.code.length)) % 2 === 0 ? `<rect x="${(i % 7) * 10}" y="${Math.floor(i / 7) * 10}" width="8" height="8" rx="1.5" fill="#183C35"/>` : '')).join('');
-  dlg.innerHTML = `<div class="sheet qr"><h2>Mã QR voucher</h2><p class="hint">${esc(rv.merchant)}</p><b>${esc(rv.title)}</b><div class="qrbox"><svg width="140" height="140" viewBox="0 0 70 70" role="img" aria-label="Mã QR ${esc(rv.code)}" style="stroke:none">${cells}</svg></div><div class="code">${esc(rv.code)}</div><button type="button" class="btn primary block" data-close>Xong</button></div>`;
-  dlg.onclick = (e) => { if (e.target === dlg) dlg.close(); };
-  dlg.querySelector('[data-close]').onclick = () => dlg.close();
-  dlg.showModal();
-}
-
 /* ---------- actions ---------- */
 function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 const actions = {
@@ -492,22 +475,6 @@ const actions = {
   gojars: () => { ui.tab = 'plan'; ui.plan = 'goals'; render(); window.scrollTo(0, 0); },
   gorewards: () => go('rewards'),
   toggledark: () => { state.darkMode = !state.darkMode; save(); render(); },
-  checkin: () => {
-    const today = L.todayStr(), r = L.computeCheckIn(state.lastCheckInDate, state.streakDays, today); if (!r) return;
-    state.streakDays = r.streakDays; state.lastCheckInDate = today; award(r.points, `Điểm danh ngày ${r.streakDays}`);
-    save(); render(); toast(`Điểm danh thành công! +${r.points} FinPoints`);
-    LB.claimCheckin().then(() => LB.refreshLeaderboard());
-  },
-  claimweek: () => {
-    const today = L.todayStr(), wk = L.currentWeekKey(today); if (state.weeklyBudgetBonusClaimedWeek === wk) return;
-    state.weeklyBudgetBonusClaimedWeek = wk; award(50, 'Thưởng giữ vững ngân sách tuần'); claimQueue.add('week'); save(); render(); toast('Nhận +50 FinPoints giữ vững ngân sách!');
-  },
-  redeem: (id) => {
-    const v = L.MAC_DINH_CHI_VOUCHERS.find((x) => x.id === id); if (!v || state.finPoints < v.costPoints) return;
-    const rv = { id: L.uid(), merchant: v.merchant, title: v.title, discountLabel: v.discountLabel, code: `FM-MDC-${Math.floor(1000 + Math.random() * 9000)}`, redeemedAt: L.todayStr(), used: false };
-    award(-v.costPoints, `Đổi ${v.discountLabel}`); state.redeemedVouchers.unshift(rv); save(); render(); qrSheet(rv);
-  },
-  openqr: (id) => { const rv = state.redeemedVouchers.find((x) => x.id === id); if (rv) qrSheet(rv); },
   settledebt: (id) => {
     const d = state.debts.find((x) => x.id === id); if (!d || d.settled) return; d.settled = true;
     state.transactions.push({ id: L.uid(), type: d.direction === 'lend' ? 'income' : 'expense', amount: d.amount, categoryId: d.direction === 'lend' ? 'other-inc' : 'other-exp', walletId: d.walletId || 'cash', date: L.todayStr(), note: `Tất toán với ${d.personName}` });
@@ -522,7 +489,6 @@ const actions = {
     }
     save(); render(); toast('Đã áp dụng ngân sách AI', { label: 'Hoàn tác', run: () => { state.budgets = before; save(); render(); } });
   },
-  loaddemo: () => { if (confirm('Thay TOÀN BỘ dữ liệu hiện tại bằng dữ liệu mẫu? Bạn nên sao lưu (JSON) trước.')) { const keep = { profile: state.profile, darkMode: state.darkMode }; state = { ...L.createSeedState(), ...keep }; ui.recent = []; save(); render(); toast('Đã nạp dữ liệu mẫu'); } },
   delbudget: (id) => { const i = state.budgets.findIndex((b) => b.id === id), [gone] = state.budgets.splice(i, 1); save(); render();
     toast('Đã xóa ngân sách', { label: 'Hoàn tác', run: () => { state.budgets.splice(i, 0, gone); save(); render(); } }); },
   delgoal: (id) => { if (confirm('Xóa mục tiêu này cùng các khoản đã góp?')) { state.goals = state.goals.filter((g) => g.id !== id); save(); render(); } },
@@ -553,7 +519,7 @@ document.addEventListener('submit', (e) => {
   if (e.target.id === 'chatform') { e.preventDefault(); ask($('#chat-input').value); }
   else if (e.target.id === 'profileform') {
     e.preventDefault();
-    state.profile = { name: $('#pname').value.trim(), className: $('#pclass').value.trim().toUpperCase(), grade: Number($('#pgrade').value) || 10, school: $('#pschool').value.trim() || L.DEFAULT_PROFILE.school };
+    state.profile = { name: $('#pname').value.trim(), className: $('#pclass').value.trim().toUpperCase(), grade: Number($('#pgrade').value) || 0, school: $('#pschool').value.trim() };
     save(); render(); toast('Đã lưu hồ sơ');
   }
 });
@@ -695,7 +661,6 @@ if (!cloud.exists && initialLegacyState) {
   }
 }
 async function leave() {
-  LB.resetLeaderboard(); claimQueue.clear(); triedGoals.clear();
   await cloudAuth.logout();
   account = null;
   state = L.emptyState();

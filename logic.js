@@ -20,23 +20,7 @@ export const DEFAULT_WALLETS = [
   { id: 'zalopay', name: 'Ví ZaloPay', shortName: 'ZaloPay', initialBalance: 0, icon: '💠' },
 ];
 
-export const MAC_DINH_CHI_VOUCHERS = [
-  { id: 'v-milktea', merchant: 'Trà Sữa Mộc · Đối diện cổng MĐC', areaNote: 'Cách cổng 50m', title: 'Giảm 15.000 ₫ cho mọi ly size L', discountLabel: '-15k Trà sữa', costPoints: 80, accent: '#F8DCCB' },
-  { id: 'v-photo', merchant: 'Tiệm Photo Cô Lan · Cổng sau MĐC', areaNote: 'Hẻm 12 Tân Hòa Đông', title: 'Miễn phí in & photo 20 trang tài liệu', discountLabel: 'Free 20 trang', costPoints: 60, accent: '#F7E7A8' },
-  { id: 'v-parking', merchant: 'Bãi Gửi Xe Chú Ba · Cổng phụ', areaNote: 'Sát vách trường MĐC', title: 'Combo miễn phí gửi xe 5 lượt', discountLabel: '5 lượt gửi xe', costPoints: 50, accent: '#E8DDF8' },
-  { id: 'v-banhmi', merchant: 'Bánh Mì & Sữa Đậu Nành Sáng', areaNote: 'Góc ngã tư trường MĐC', title: 'Giảm 10.000 ₫ hóa đơn từ 25.000 ₫', discountLabel: '-10k Ăn sáng', costPoints: 45, accent: '#E1F5EC' },
-];
-
-export const LEADERBOARD_PEERS = [
-  { id: 'p1', name: 'Bảo Ngọc', className: '10A10', grade: 10, savedThisMonth: 740_000, savingsRatePct: 37, streakDays: 14 },
-  { id: 'p2', name: 'Hoàng Nam', className: '12A1', grade: 12, savedThisMonth: 820_000, savingsRatePct: 41, streakDays: 19 },
-  { id: 'p3', name: 'Gia Huy', className: '10A10', grade: 10, savedThisMonth: 510_000, savingsRatePct: 28, streakDays: 8 },
-  { id: 'p4', name: 'Khánh Vy', className: '11A3', grade: 11, savedThisMonth: 690_000, savingsRatePct: 34, streakDays: 11 },
-  { id: 'p5', name: 'Thảo Nhi', className: '10A2', grade: 10, savedThisMonth: 450_000, savingsRatePct: 24, streakDays: 5 },
-  { id: 'p6', name: 'Tuấn Kiệt', className: '11A8', grade: 11, savedThisMonth: 390_000, savingsRatePct: 21, streakDays: 7 },
-];
-
-export const DEFAULT_PROFILE = { name: '', className: '10A10', grade: 10, school: 'THPT Mạc Đĩnh Chi' };
+export const DEFAULT_PROFILE = { name: '', className: '', grade: 0, school: '' };
 
 export const formatVND = (n) => new Intl.NumberFormat('vi-VN').format(Math.round(n)) + ' ₫';
 export const monthKey = (dateStr) => dateStr.slice(0, 7);
@@ -98,7 +82,6 @@ export function emptyState() {
   return {
     version: 2, transactions: [], categories: DEFAULT_CATEGORIES, budgets: [], goals: [],
     profile: { ...DEFAULT_PROFILE }, darkMode: false, wallets: DEFAULT_WALLETS.map((w) => ({ ...w })), debts: [],
-    finPoints: 0, streakDays: 0, lastCheckInDate: '', weeklyBudgetBonusClaimedWeek: '', pointHistory: [], redeemedVouchers: [],
     chatHistory: [],
   };
 }
@@ -110,17 +93,13 @@ export function normalizeState(data) {
   for (const c of DEFAULT_CATEGORIES) if (!categories.some((x) => x.id === c.id)) categories.push(c);
   const wallets = arr(data.wallets, []).length ? data.wallets : base.wallets;
   const num = (v, d = 0) => (Number.isFinite(v) ? v : d);
-  const { bankSync: _b, isPremium: _p, ...clean } = data; // legacy fields from removed features
   return {
-    ...base, ...clean,
+    ...base, ...data,
     categories, wallets,
     transactions: arr(data.transactions, []), budgets: arr(data.budgets, []), goals: arr(data.goals, []).map((g) => ({ ...g, contributions: arr(g.contributions, []) })),
-    debts: arr(data.debts, []), pointHistory: arr(data.pointHistory, []), redeemedVouchers: arr(data.redeemedVouchers, []), chatHistory: arr(data.chatHistory, []),
+    debts: arr(data.debts, []), chatHistory: arr(data.chatHistory, []),
     profile: { ...DEFAULT_PROFILE, ...(data.profile && typeof data.profile === 'object' ? data.profile : {}) },
     darkMode: Boolean(data.darkMode),
-    finPoints: num(data.finPoints), streakDays: num(data.streakDays),
-    lastCheckInDate: typeof data.lastCheckInDate === 'string' ? data.lastCheckInDate : '',
-    weeklyBudgetBonusClaimedWeek: typeof data.weeklyBudgetBonusClaimedWeek === 'string' ? data.weeklyBudgetBonusClaimedWeek : '',
   };
 }
 
@@ -185,6 +164,17 @@ export function computeWalletBalances(wallets, transactions) {
   return balances;
 }
 
+// Warns when the current balance falls below `threshold` (default 20%) of the starting balance set in "Số dư đầu".
+// No warning when no starting balance has been entered (nothing to compare against).
+export function lowBalanceStatus(wallets, transactions, threshold = 0.2) {
+  const bal = computeWalletBalances(wallets, transactions);
+  const initial = wallets.reduce((a, w) => a + Math.max(0, w.initialBalance || 0), 0);
+  const current = Object.values(bal).reduce((a, b) => a + b, 0);
+  const lowWallets = wallets.filter((w) => (w.initialBalance || 0) > 0 && bal[w.id] < w.initialBalance * threshold)
+    .map((w) => ({ id: w.id, name: w.shortName || w.name, balance: bal[w.id], initial: w.initialBalance }));
+  return { initial, current, pct: initial > 0 ? Math.round((current / initial) * 100) : null, low: initial > 0 && current < initial * threshold, lowWallets };
+}
+
 // Splits a new income across saving goals ("jars") that have an auto-allocation percentage.
 export function applyJarAutoAllocation(goals, incomeAmount, date) {
   if (!(incomeAmount > 0)) return { updatedJars: goals, totalAllocated: 0 };
@@ -239,7 +229,7 @@ export function generateAIInsights(transactions, categories, budgets, month, tod
   const milkAmt = s.byCategory.milktea || 0;
   if (milkAmt > 0) {
     const milkPct = Math.round((milkAmt / s.expense) * 100);
-    if (milkPct >= 20) out.push({ tone: 'tip', title: `Trà sữa chiếm ${milkPct}% chi tiêu`, message: 'Đổi voucher FinPoints quanh trường Mạc Đĩnh Chi giúp bạn giảm đáng kể khoản này.' });
+    if (milkPct >= 20) out.push({ tone: 'tip', title: `Trà sữa chiếm ${milkPct}% chi tiêu`, message: 'Thử đặt ngân sách riêng cho trà sữa để kiểm soát khoản này.' });
   }
   let wknd = 0;
   for (const t of transactions) {
@@ -275,7 +265,7 @@ export function answerAIChat(question, state, month, today) {
   const foodTotal = (s.byCategory.food || 0) + (s.byCategory.milktea || 0);
   const foodPct = s.expense > 0 ? Math.round((foodTotal / s.expense) * 100) : 0;
   if (q.includes('an uong') || q.includes('tra sua') || q.includes('bot'))
-    return `Tháng này bạn đã chi ${formatVND(foodTotal)} cho Ăn uống + Trà sữa (${foodPct}% tổng chi ${formatVND(s.expense)}). Mẹo: mang nước từ nhà, giảm 2 ly trà sữa/tuần và đổi voucher FinPoints quanh trường Mạc Đĩnh Chi sẽ giúp bạn dư thêm ~150.000 ₫/tháng!`;
+    return `Tháng này bạn đã chi ${formatVND(foodTotal)} cho Ăn uống + Trà sữa (${foodPct}% tổng chi ${formatVND(s.expense)}). Mẹo: mang nước từ nhà, giảm 2 ly trà sữa/tuần sẽ giúp bạn dư thêm một khoản đáng kể mỗi tháng!`;
   if (q.includes('du bao') || q.includes('het tien') || q.includes('cuoi thang')) return fc.summaryText;
   if (q.includes('ke hoach') || q.includes('chia') || q.includes('ngan sach')) {
     const plan = generateAutoBudgetPlan(s.income || 1_800_000);
@@ -294,90 +284,8 @@ export function buildComparisonReport(transactions, categories, month) {
   return { prevMonth, curr, prev, rows };
 }
 
-export function rankLeaderboard(peers, me, scope) {
-  const cls = (x) => String(x.className || '').toUpperCase();
-  return [...peers, { ...me, id: 'me', isCurrentUser: true }]
-    .filter((s) => (scope === 'grade' ? s.grade === me.grade : scope === 'class' ? cls(s) === cls(me) : true))
-    .sort((a, b) => b.savedThisMonth - a.savedThisMonth);
-}
-
 export function computeDebtTotals(debts) {
   let receivable = 0, payable = 0;
   for (const d of debts) { if (d.settled) continue; if (d.direction === 'lend') receivable += d.amount; else payable += d.amount; }
   return { receivable, payable, net: receivable - payable };
-}
-
-export function currentWeekKey(today) {
-  const [y, m, d] = today.split('-').map(Number), dt = new Date(y, m - 1, d), start = new Date(y, 0, 1);
-  const wk = Math.ceil(((dt - start) / 86400000 + start.getDay() + 1) / 7);
-  return `${y}-W${String(wk).padStart(2, '0')}`;
-}
-
-export const CHECKIN_POINTS = 15;
-// Daily check-in: the streak continues only if the last check-in was yesterday, otherwise it restarts at 1.
-export function computeCheckIn(lastCheckInDate, streakDays, today) {
-  if (lastCheckInDate === today) return null;
-  const [y, m, d] = today.split('-').map(Number), yest = todayStr(new Date(y, m - 1, d - 1));
-  return { streakDays: lastCheckInDate === yest ? streakDays + 1 : 1, points: CHECKIN_POINTS };
-}
-
-// Demo data (the first project's seed), available from Settings -> "Nạp dữ liệu mẫu".
-export function createSeedState(now = new Date()) {
-  const today = todayStr(now), cm = today.slice(0, 7), day = Number(today.slice(8, 10));
-  const m = (n) => shiftMonth(cm, -n), d = (off) => `${cm}-${String(Math.max(1, day - off)).padStart(2, '0')}`;
-  const wknd = (() => { for (let i = 0; i < Math.min(day, 14); i++) { const dt = new Date(now.getFullYear(), now.getMonth(), day - i); if (dt.getDay() === 0 || dt.getDay() === 6) return todayStr(dt); } return `${cm}-07`; })();
-  const tx = (id, type, amount, categoryId, walletId, date, note) => ({ id, type, amount, categoryId, walletId, date, note });
-  return normalizeState({
-    wallets: [{ ...DEFAULT_WALLETS[0], initialBalance: 220_000 }, { ...DEFAULT_WALLETS[1], initialBalance: 850_000 }, { ...DEFAULT_WALLETS[2], initialBalance: 380_000 }, { ...DEFAULT_WALLETS[3], initialBalance: 190_000 }],
-    transactions: [
-      tx('c1', 'income', 1_400_000, 'allowance', 'bank', `${cm}-01`, 'Tiền tiêu vặt tháng từ mẹ'),
-      tx('c2', 'income', 450_000, 'parttime', 'momo', `${cm}-05`, 'Trợ giảng tiếng Anh cuối tuần'),
-      tx('c3', 'expense', 165_000, 'food', 'cash', d(1), 'Ăn trưa căn tin & bánh mì sáng'),
-      tx('c4', 'expense', 135_000, 'milktea', 'momo', wknd, 'Trà sữa & bánh tráng trộn nhóm 10A10'),
-      tx('c5', 'expense', 195_000, 'food', 'zalopay', wknd, 'Đi ăn lẩu tokbokki cuối tuần'),
-      tx('c6', 'expense', 95_000, 'study', 'cash', d(3), 'Photo đề cương & mua bút highlight'),
-      tx('c7', 'expense', 60_000, 'transport', 'cash', d(2), 'Vé xe buýt & gửi xe cổng sau'),
-      tx('c8', 'expense', 120_000, 'fun', 'bank', wknd, 'Vé xem phim cuối tuần'),
-      tx('c9', 'expense', 110_000, 'milktea', 'momo', d(4), 'Trà đào sau giờ học thêm'),
-      tx('m1a', 'income', 1_100_000, 'allowance', 'bank', `${m(1)}-02`, 'Tiền tiêu vặt qua thẻ'),
-      tx('m1b', 'income', 500_000, 'allowance', 'cash', `${m(1)}-02`, 'Tiền mặt tiêu vặt'),
-      tx('m1c', 'income', 400_000, 'parttime', 'zalopay', `${m(1)}-10`, 'Thưởng học sinh giỏi'),
-      tx('m1d', 'expense', 420_000, 'food', 'cash', `${m(1)}-11`, 'Ăn uống tháng trước'),
-      tx('m1e', 'expense', 190_000, 'milktea', 'momo', `${m(1)}-15`, 'Trà sữa & ăn vặt'),
-      tx('m1f', 'expense', 240_000, 'study', 'bank', `${m(1)}-18`, 'Sách tham khảo'),
-      tx('m1g', 'expense', 160_000, 'fun', 'zalopay', `${m(1)}-22`, 'Đi chơi nhóm lớp'),
-      tx('m2a', 'income', 1_550_000, 'allowance', 'bank', `${m(2)}-02`, 'Tiền đầu năm học'),
-      tx('m2b', 'expense', 520_000, 'study', 'bank', `${m(2)}-08`, 'Sách vở mới'),
-      tx('m3a', 'income', 1_400_000, 'allowance', 'bank', `${m(3)}-03`, 'Tiền sinh hoạt tháng'),
-      tx('m3b', 'expense', 740_000, 'shopping', 'bank', `${m(3)}-12`, 'Mua balo mới'),
-      tx('m4a', 'income', 1_650_000, 'parttime', 'bank', `${m(4)}-05`, 'Dạy kèm hè'),
-      tx('m4b', 'expense', 610_000, 'fun', 'bank', `${m(4)}-16`, 'Trại hè'),
-      tx('m5a', 'income', 1_350_000, 'allowance', 'cash', `${m(5)}-01`, 'Tiền tiêu vặt'),
-      tx('m5b', 'expense', 670_000, 'food', 'cash', `${m(5)}-14`, 'Ăn uống'),
-    ],
-    budgets: [{ id: 'b-all', categoryId: null, limit: 1_450_000 }, { id: 'b-food', categoryId: 'food', limit: 450_000 }, { id: 'b-milk', categoryId: 'milktea', limit: 250_000 }],
-    goals: [
-      { id: 'j1', name: 'Mua tai nghe Sony', icon: '🎧', target: 1_200_000, deadline: `${shiftMonth(cm, 2)}-20`, autoAllocatePct: 15, contributions: [{ amount: 620_000, date: `${cm}-02` }] },
-      { id: 'j2', name: 'Bộ sách luyện thi IELTS', icon: '📖', target: 500_000, deadline: `${shiftMonth(cm, 1)}-15`, autoAllocatePct: 10, contributions: [{ amount: 200_000, date: `${cm}-05` }] },
-    ],
-    debts: [
-      { id: 'd1', direction: 'lend', personName: 'Gia Huy', className: '10A10', amount: 55_000, date: d(2), note: 'Ứng tiền trà sữa & cơm trưa', walletId: 'momo', settled: false },
-      { id: 'd2', direction: 'borrow', personName: 'Bảo Ngọc', className: '10A10', amount: 35_000, date: d(4), note: 'Tiền photo đề cương', walletId: 'cash', settled: false },
-    ],
-    finPoints: 185, streakDays: 6, lastCheckInDate: d(1),
-    pointHistory: [
-      { id: 'p1', title: 'Chuỗi ghi chép 6 ngày', points: 60, date: d(1) },
-      { id: 'p2', title: 'Không vượt ngân sách tuần trước', points: 50, date: d(5) },
-      { id: 'p3', title: 'Đổi voucher Bánh mì Sáng', points: -45, date: d(6) },
-    ],
-    redeemedVouchers: [{ id: 'rv1', merchant: 'Bánh Mì & Sữa Đậu Nành Sáng', title: 'Giảm 10.000 ₫ hóa đơn từ 25.000 ₫', discountLabel: '-10k Ăn sáng', code: 'FM-MDC-8421', redeemedAt: d(6), used: false }],
-  });
-}
-
-// Streak shown to the user: it only counts if the last check-in was today or yesterday.
-export function activeStreak(lastCheckInDate, streakDays, today) {
-  if (!lastCheckInDate) return 0;
-  if (lastCheckInDate === today) return streakDays;
-  const [y, m, d] = today.split('-').map(Number);
-  return lastCheckInDate === todayStr(new Date(y, m - 1, d - 1)) ? streakDays : 0;
 }

@@ -5,14 +5,15 @@ import { PERIODS, SCOPES, PAGE_SIZE, BADGES, ERRORS, validateUsername, mapLbErro
 
 /* ---------- server calls (claims never carry a point value) ---------- */
 async function rpc(name, args) { const { data, error } = await supabase.rpc(name, args); if (error) throw error; return data; }
+const REASONS = { no_budget: 'Hãy đặt ngân sách tổng cho tháng trước.', over_budget: 'Bạn đang vượt ngân sách tháng này.', log_more_days: 'Cần ghi chép giao dịch ít nhất 3 ngày trong 7 ngày gần nhất.', not_synced: 'Dữ liệu chưa đồng bộ lên đám mây, thử lại sau giây lát.', goal_not_synced: 'Dữ liệu chưa đồng bộ, thử lại sau giây lát.', goal_not_complete: 'Mục tiêu chưa hoàn thành.', monthly_cap: 'Đã đạt giới hạn 3 mục tiêu/tháng.' };
 const quiet = (p) => p.catch((e) => { console.warn('Leaderboard sync skipped', e?.message || e); return null; });
 export const claimCheckin = () => quiet(rpc('claim_checkin'));
 export const claimGoal = (goalId) => quiet(rpc('claim_goal', { p_goal_id: String(goalId) }));
 export const claimBudgetWeek = () => quiet(rpc('claim_budget_week'));
 
 /* ---------- UI ---------- */
-const S = { period: 'weekly', scope: 'all', search: '', page: 0, rows: [], total: 0, me: null, summary: null, loading: false, error: '', editing: false, timer: null, poll: null, seq: 0 };
-let root = null, onChange = () => {};
+const S = { period: 'weekly', scope: 'all', search: '', page: 0, rows: [], total: 0, me: null, summary: null, loading: false, error: '', editing: false, busy: false, timer: null, poll: null, seq: 0 };
+let root = null, onChange = () => {}, hooks = { toast: () => {}, isSynced: () => true };
 
 async function load() {
   const seq = ++S.seq; S.loading = true; S.error = ''; paint();
@@ -43,6 +44,8 @@ function paint() {
     <p class="lb-note">Điểm do máy chủ xác minh từ thói quen thật (điểm danh, hoàn thành hũ, giữ ngân sách). Chỉ người đã bật tham gia mới hiển thị, bằng biệt danh.</p>
     <div class="lb-stats"><div><small>Tổng FinPoints xếp hạng</small><b class="num">${sm?.total_points ?? 0}</b></div><div><small>Chuỗi điểm danh</small><b class="num">🔥 ${sm?.streak ?? 0}</b></div></div>
     ${badges ? `<div class="lb-badges">${badges}</div>` : ''}
+    <div class="lb-earn"><button type="button" class="btn ${sm?.checked_in_today ? '' : 'primary'}" data-lb-checkin ${sm?.checked_in_today || S.busy ? 'disabled' : ''}>${sm?.checked_in_today ? 'Đã điểm danh hôm nay' : 'Điểm danh +15 FinPoints'}</button>
+      <button type="button" class="btn" data-lb-week ${sm?.week_claimed || S.busy ? 'disabled' : ''}>${sm?.week_claimed ? 'Đã nhận thưởng tuần' : 'Thưởng giữ ngân sách +50'}</button></div>
     ${S.editing || !sm?.has_profile ? profileForm(sm) : `<div class="lb-prof"><span>Biệt danh: <b>${esc(sm.username)}</b> · ${joined ? 'Đang tham gia' : 'Đang ẩn'}</span><button type="button" class="btn sm" data-lb-edit>Sửa hồ sơ</button></div>`}
     <div class="seg" role="group" aria-label="Kỳ xếp hạng">${seg(PERIODS, 'period', S.period)}</div>
     <div class="seg lb-scope" role="group" aria-label="Phạm vi">${seg(SCOPES, 'scope', S.scope)}</div>
@@ -72,9 +75,21 @@ async function saveProfile(form) {
   } catch (e) { err.textContent = mapLbError(e); btn.disabled = false; }
 }
 
+async function earn(kind) {
+  if (kind === 'week' && !hooks.isSynced()) return hooks.toast('Đang đồng bộ dữ liệu, thử lại sau giây lát.');
+  S.busy = true; paint();
+  try {
+    const r = await rpc(kind === 'week' ? 'claim_budget_week' : 'claim_checkin');
+    hooks.toast(r?.awarded ? `+${r.points} FinPoints!` : REASONS[r?.reason] || 'Bạn đã nhận rồi.');
+  } catch (e) { hooks.toast(mapLbError(e)); }
+  S.busy = false; await load();
+}
+
 function bind() {
   root.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-lb-period],[data-lb-scope],[data-lb-page],[data-lb-edit],[data-lb-retry]'); if (!t) return;
+    const t = e.target.closest('[data-lb-period],[data-lb-scope],[data-lb-page],[data-lb-edit],[data-lb-retry],[data-lb-checkin],[data-lb-week]'); if (!t) return;
+    if (t.dataset.lbCheckin !== undefined) return earn('checkin');
+    if (t.dataset.lbWeek !== undefined) return earn('week');
     if (t.dataset.lbPeriod) { S.period = t.dataset.lbPeriod; S.page = 0; }
     else if (t.dataset.lbScope) { S.scope = t.dataset.lbScope; S.page = 0; }
     else if (t.dataset.lbPage) S.page = Math.max(0, S.page + Number(t.dataset.lbPage));
@@ -88,11 +103,12 @@ function bind() {
   root.addEventListener('submit', (e) => { if (e.target.id === 'lb-form') { e.preventDefault(); saveProfile(e.target); } });
 }
 
-// Mount into a container; `claimToday` = user already checked in locally (idempotent retry of the server claim).
-export function mountLeaderboard(el, { claimToday = false, onProfileSaved = () => {} } = {}) {
-  root = el; onChange = onProfileSaved; clearInterval(S.poll); bind();
-  (claimToday ? claimCheckin() : Promise.resolve()).then(() => load());
+// Mount into a container. State is cleared automatically when a different account mounts it.
+export function mountLeaderboard(el, { userId = null, onProfileSaved = () => {}, toast = () => {}, isSynced = () => true } = {}) {
+  if (S.uid !== userId) { resetLeaderboard(); S.uid = userId; } // never show a previous account's data
+  root = el; onChange = onProfileSaved; hooks = { toast, isSynced }; clearInterval(S.poll); bind();
+  load();
   S.poll = setInterval(() => { if (!root?.isConnected) return clearInterval(S.poll); if (!document.hidden && !S.loading) load(); }, 45000); // near-real-time refresh
 }
 export const refreshLeaderboard = () => { if (root?.isConnected) load(); };
-export const resetLeaderboard = () => { clearInterval(S.poll); Object.assign(S, { rows: [], total: 0, me: null, summary: null, page: 0, search: '', editing: false }); root = null; };
+export const resetLeaderboard = () => { clearInterval(S.poll); Object.assign(S, { rows: [], total: 0, me: null, summary: null, page: 0, search: '', editing: false, busy: false, uid: null }); root = null; };

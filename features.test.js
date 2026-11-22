@@ -21,17 +21,8 @@ test('jar auto allocation', () => {
   assert.equal(L.applyJarAutoAllocation(goals, 0, 'x').totalAllocated, 0);
 });
 
-test('check-in streak continues only from yesterday', () => {
-  assert.deepEqual(L.computeCheckIn('2026-11-20', 6, '2026-11-21'), { streakDays: 7, points: 15 });
-  assert.equal(L.computeCheckIn('2026-11-10', 6, '2026-11-21').streakDays, 1);
-  assert.equal(L.computeCheckIn('2026-11-21', 6, '2026-11-21'), null);
-  assert.equal(L.activeStreak('2026-11-10', 6, '2026-11-21'), 0); assert.equal(L.activeStreak('2026-11-21', 6, '2026-11-21'), 6);
-});
-
-test('debts, leaderboard, auto budget, forecast', () => {
+test('debts, auto budget, forecast', () => {
   assert.deepEqual(L.computeDebtTotals([{ direction: 'lend', amount: 55 }, { direction: 'borrow', amount: 35 }, { direction: 'lend', amount: 9, settled: true }]), { receivable: 55, payable: 35, net: 20 });
-  const b = L.rankLeaderboard(L.LEADERBOARD_PEERS, { name: 'Me', className: '', grade: 10, savedThisMonth: 600_000 }, 'grade');
-  assert.ok(b.every((x) => x.grade === 10) && b.some((x) => x.isCurrentUser));
   const p = L.generateAutoBudgetPlan(2_000_000); assert.equal(p.savingSuggestion, 400_000); assert.equal(p.totalLimit, 1_600_000);
   const f = L.generateForecast([{ type: 'expense', amount: 300_000, categoryId: 'food', date: '2026-11-10' }], [{ categoryId: null, limit: 600_000 }], '2026-11', '2026-11-10');
   assert.equal(f.dailyBurnRate, 30_000); assert.equal(f.runOutDay, 20);
@@ -42,10 +33,24 @@ test('old saves are upgraded without losing data', () => {
   const s = L.validateImport(old);
   assert.equal(s.transactions.length, 1); assert.equal(s.budgets[0].limit, 9); assert.equal(s.goals[0].name, 'G');
   assert.ok(s.categories.some((c) => c.id === 'milktea') && s.categories.find((c) => c.id === 'food').name === 'Ăn uống');
-  assert.ok(s.wallets.length === 4 && Array.isArray(s.debts) && s.finPoints === 0);
+  assert.ok(s.wallets.length === 4 && Array.isArray(s.debts) && s.profile.school === '' && s.profile.className === '');
 });
 
-test('csv has wallet column; demo seed is valid', () => {
+test('csv has wallet column; new accounts start blank', () => {
   assert.match(L.toCSV([{ type: 'expense', amount: 1, categoryId: 'food', walletId: 'momo', date: '2026-11-01', note: '' }], L.DEFAULT_CATEGORIES, L.DEFAULT_WALLETS), /Ví MoMo/);
-  assert.ok(L.validateImport(L.createSeedState()).transactions.length > 10);
+  const e = L.emptyState(); assert.equal(e.transactions.length, 0); assert.equal(e.goals.length, 0); assert.equal(e.debts.length, 0);
+  assert.deepEqual(e.profile, { name: '', className: '', grade: 0, school: '' });
+  for (const k of ['isPremium', 'bankSync', 'finPoints', 'redeemedVouchers']) assert.ok(!(k in e), k);
+  assert.ok(!('MAC_DINH_CHI_VOUCHERS' in L) && !('BANK_SYNC_FEED' in L) && !('LEADERBOARD_PEERS' in L) && !('createSeedState' in L));
+});
+
+test('low balance warning below 20% of the starting balance', () => {
+  const w = [{ id: 'cash', initialBalance: 1000 }, { id: 'bank', initialBalance: 0 }];
+  const spend = (amount, walletId = 'cash') => ({ type: 'expense', amount, categoryId: 'food', walletId, date: '2026-11-02' });
+  assert.equal(L.lowBalanceStatus(w, [spend(700)]).low, false);        // 30% left
+  assert.equal(L.lowBalanceStatus(w, [spend(800)]).low, false);        // exactly 20% is not below
+  const s = L.lowBalanceStatus(w, [spend(850)]);                       // 15% left
+  assert.equal(s.low, true); assert.equal(s.pct, 15); assert.equal(s.lowWallets[0].id, 'cash');
+  assert.equal(L.lowBalanceStatus(w, [spend(1200)]).low, true);        // negative
+  assert.equal(L.lowBalanceStatus([{ id: 'cash', initialBalance: 0 }], [spend(50)]).low, false); // no starting balance set
 });

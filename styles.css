@@ -290,32 +290,15 @@ body.locked .nav,body.locked .fab,body.locked .stage{display:none}
 .btn[disabled]{opacity:.45;cursor:not-allowed;transform:none}
 
 /* ---------- rewards ---------- */
-.reward-banner{background:var(--primary);color:#fff;border-radius:var(--r-2xl);padding:24px 22px}
-.reward-banner small{opacity:.8;font-weight:600}
-.reward-banner .pts{font-size:2.6rem;font-weight:800;letter-spacing:-.04em;color:var(--tertiary);line-height:1.1;margin-top:2px}
-.reward-banner .pts span{font-size:1rem;color:#fff;letter-spacing:0}
-.reward-banner p{margin:6px 0 0;font-size:.88rem;opacity:.9}
-.streak-row{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:16px}
-.streak-pill{text-align:center;padding:8px 0;border-radius:12px;background:rgba(255,255,255,.12);font-size:.74rem;font-weight:800;color:rgba(255,255,255,.7)}
-.streak-pill.on{background:var(--tertiary);color:#183C35}
-.btn.gold{background:var(--tertiary);border-color:var(--tertiary);color:#183C35}.btn.gold:hover{background:#f2dc87}
-.btn.ghost{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.3);color:#fff}.btn.ghost:hover{background:rgba(255,255,255,.22)}
-.reward-banner .btn{min-height:46px;padding:10px 18px;font-size:.9rem}
 .hist{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:.88rem}
 .hist:last-child{border-bottom:0}
 .card h2+.hist{margin-top:6px}
 .pos{color:var(--ok)}.neg{color:var(--err)}
-.hist .code,.qr .code{font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;color:var(--mute);font-size:.8rem;font-weight:700}
-.vouchers{display:grid;gap:10px}
-.voucher{margin:0;padding:18px 20px;display:grid;gap:10px;border-left:8px solid var(--acc)}
-.voucher p{font-size:.82rem}.voucher h3{margin:2px 0 0;font-size:1rem;font-weight:800}
 .v-foot{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .rank{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 10px;border-bottom:1px solid var(--line);font-size:.9rem}
 .rank small{color:var(--mute);font-weight:600}
 .rank.me{background:var(--secondary);border-radius:14px;border-bottom-color:transparent}
 .seg.scope{margin:12px 0 6px}
-.qr{text-align:center}.qr .qrbox{display:inline-block;margin:16px 0 8px;padding:16px;background:#fff;border-radius:20px;border:1px solid var(--line)}
-.qr .code{display:block;font-size:1.1rem;color:var(--ink)}
 
 /* ---------- AI assistant ---------- */
 .chat-log{display:grid;gap:8px;max-height:280px;overflow-y:auto;margin:12px 0;padding:2px}
@@ -365,10 +348,7 @@ html.dark .strip i::before{background:var(--primary)}
 html.dark .strip i.zero::before{background:rgba(255,255,255,.12)}
 html.dark .strip i.future::before{background:rgba(255,255,255,.06)}
 html.dark .strip i.today::before{background:var(--tertiary);box-shadow:0 0 0 2.5px var(--primary)}
-html.dark .reward-banner{background:#1B3F33}
-html.dark .streak-pill.on,html.dark .btn.gold{background:#F7E7A8;color:#183C35}
 html.dark .ai-rows .tot{border-top-color:rgba(255,255,255,.16)}
-html.dark .qr .qrbox{background:#fff}
 html.dark .meter .trk{stroke:var(--secondary)}
 html.dark .seg{background:var(--secondary)}
 html.dark .fc-pair>div{background:var(--bg)}
@@ -397,3 +377,37 @@ html.dark .fc-pair>div{background:var(--bg)}
 .lb-pager .btn{min-height:42px}.lb-pager .btn:disabled{opacity:.45}
 @media (max-width:420px){.lb-row{grid-template-columns:38px minmax(0,1fr) auto;}.lb-row .lb-mv{display:none}.lb-stats b{font-size:1.1rem}}
 html.dark .lb-badge{background:var(--tertiary);color:#F7E7A8}
+
+/* ---------- leaderboard ---------- */
+.lb h2{margin:0 0 4px}.lb .lb-note{font-size:.85rem;margin:0 0 12px}
+.lb-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.lb-stats>div{background:var(--secondary);border-radius:var(--r-lg);padding:12px 16px;min-width:0}
+.lb-stats small{display:block;color:var(--mute);font-size:.78rem}.lb-stats b{font-size:1.3rem}
+.lb-earn{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.lb-earn .btn:disabled{opacity:.55}
+.lb-badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.lb-badge{background:var(--tertiary);color:var(--ink);border-radius:99px;padding:5px 12px;font-size:.8rem;font-weight:700}
+.lb-prof{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;font-size:.9rem}
+.lb-form{display:grid;gap:6px;margin-bottom:14px;padding:14px;border:1px dashed var(--line);border-radius:var(--r-lg)}
+.lb-form label{font-size:.85rem;font-weight:700;margin:6px 0 0 2px}
+.lb .seg{margin-top:8px}
+#lb-search{margin:10px 0}
+.lb-me{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;background:var(--secondary);border-radius:var(--r-lg);padding:10px 16px;margin-bottom:10px}
+.lb-me.muted{color:var(--mute)}
+.lb-list{list-style:none;margin:0;padding:0;display:grid;gap:6px;transition:opacity .15s}.lb-list.loading{opacity:.5}
+.lb-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:10px 14px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface)}
+.lb-row.me{border-color:var(--primary);background:var(--secondary)}
+.lb-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}.lb-rank{font-weight:800}
+.lb-mv{font-size:.8rem;font-weight:800;min-width:34px;text-align:center}
+.lb-mv.up{color:var(--ok)}.lb-mv.down{color:var(--err)}.lb-mv.same,.lb-mv.new{color:var(--mute)}
+.lb-empty{text-align:center;color:var(--mute);padding:14px 0}.lb-err{color:var(--err);font-size:.88rem;margin:6px 0;min-height:0}
+.lb-pager{display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:.88rem;color:var(--mute)}
+.lb-pager .btn{min-height:42px}.lb-pager .btn:disabled{opacity:.45}
+.check{display:flex;align-items:center;gap:10px;margin:8px 2px 0;font-weight:600;font-size:.9rem}.check input{width:auto;min-height:0}
+@media(max-width:420px){.lb-row{grid-template-columns:38px minmax(0,1fr) auto}.lb-row .lb-mv{display:none}.lb-stats b{font-size:1.1rem}}
+
+html.dark .lb-badge{color:#F7E7A8}
+
+/* ---------- low balance warning ---------- */
+.lowbal{display:flex;gap:12px;align-items:flex-start;margin:0 0 12px;padding:14px 16px;background:var(--peach);color:var(--ink);border-left:6px solid var(--err);border-radius:var(--r-lg);font-size:.92rem;line-height:1.45}
+.lowbal-w{margin-top:4px;font-weight:600}

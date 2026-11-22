@@ -21,10 +21,10 @@ Added from the FinMate HTML/CSS/JS version:
 - **Multi-wallet** (cash, bank, MoMo, ZaloPay): pick a wallet per transaction, filter by wallet, transfer between wallets (transfers don't count as income/expense), set opening balances.
 - **Saving jars**: goals can auto-allocate a % of every new income; quick +100k / +250k; edit goals; completion bonus.
 - **Friends' debt ledger** (Plan -> Sổ nợ): lend/borrow, settle (books the money into the wallet), totals.
-- **AI assistant tab**: insights, chatbot, forecast of the day you run out of money, month-over-month comparison, 6/12-month report.
+- **AI assistant tab**: insights, chatbot, forecast of the day you run out of money, month-over-month comparison, 6/12-month report, Premium toggle.
 - **AI auto budget** (Plan -> Ngân sách): splits income into category budgets (merges with yours, with undo).
-- **Rewards tab**: daily check-in streak, weekly budget bonus, FinPoints history, vouchers with QR, savings leaderboard.
-- **Dark mode**, student profile (class/grade/school), "load demo data" in Settings.
+- **Rewards tab**: server-verified FinPoints leaderboard (see below), daily check-in, weekly budget bonus, badges.
+- **Dark mode**, optional student profile (class/grade/school, blank until you fill it in).
 
 Older cloud saves are upgraded automatically on load (missing fields/categories/wallets are filled in; nothing is removed).
 Run `npm test` for the logic tests (`auth.test.js` needs internet because it imports Supabase from esm.sh).
@@ -37,9 +37,11 @@ Run `npm test` for the logic tests (`auth.test.js` needs internet because it imp
 - Sources: daily check-in (+15, once/day, streak tracked server-side), completed saving jar (+50, verified against your synced data, max 3/month), weekly budget discipline (+50, once/week: overall budget set, month spending within it, activity on 3+ days).
 - Rankings (daily/weekly/monthly/all-time, Vietnam time), scope (all/school/class), username search, pagination and rank movement are computed in `get_leaderboard` / `get_my_rank`. Movement compares with the previous day (or previous day's ranking for "daily"); "Mới" = no points before.
 - Privacy: participation is opt-in; only a pseudonymous username and points are visible to others. Email, real name and financial data are never returned. Turning participation off hides you immediately.
-- Badges are derived from verified events. The leaderboard rank uses lifetime-earned points, so spending FinPoints on vouchers does not lower it.
+- Badges are derived from verified events. The leaderboard rank uses lifetime-earned points, there is no points spending, so rank never drops.
 - The board refreshes every 45 s while visible and after each claim (polling, not websockets).
 
 **Deploy (GitHub Pages):** commit all files (including `leaderboard.js`, `leaderboard-logic.js`), push, and make sure your Pages URL is in Supabase -> Authentication -> URL Configuration. Bump the service-worker cache name when you change assets (done: `finmate-v5`). Run `npm test`.
 
 **Limitation:** transactions/budgets are stored in the user-editable `finmate_states` row, so budget and goal checks bound abuse (one-time keys, caps) but cannot be fully tamper-proof. Fully trusted verification would require moving transaction writes behind server functions.
+
+**Removed for now:** bank integration (simulated Casso sync), the Premium subscription, demo data, partner vouchers and the fake peer leaderboard. New accounts start completely blank.

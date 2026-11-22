@@ -249,6 +249,9 @@ begin
   return jsonb_build_object(
     'has_profile', p.user_id is not null, 'username', p.username, 'participate', coalesce(p.participate, false),
     'school', p.school_key, 'class_name', p.class_key,
+    'checked_in_today', coalesce(t.last_checkin = vn_today(), false),
+    'week_claimed', exists (select 1 from point_events where user_id = v_uid and kind = 'budget_week'
+                            and ref_key = to_char(vn_today(), 'IYYY-"W"IW')),
     'total_points', coalesce(t.total_points, 0), 'streak', v_streak, 'best_streak', coalesce(t.best_streak, 0),
     'badges', to_jsonb(v_badges));
 end $$;
