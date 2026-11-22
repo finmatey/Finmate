@@ -1,13 +1,21 @@
 import * as L from './logic.js';
 import { cloudAuth, validateNewAccount, MIN_PASSWORD } from './auth.js';
+import * as LB from './leaderboard.js';
 
 let account = null, state = L.emptyState();
 const thisMonth = () => L.monthKey(L.todayStr());
-let ui = { tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus: 'synced' };
+const freshUi = (syncStatus = 'synced') => ({ tab: 'home', plan: 'budget', q: '', month: thisMonth(), recent: [], entered: false, syncStatus, walletFilter: 'all', boardScope: 'grade', trendRange: 6, lastWallet: 'cash' });
+let ui = freshUi();
 
 const cacheKey = () => `finmate:cache:${account?.id}`;
 let syncTimer = null;
 
+const claimQueue = new Set(), triedGoals = new Set();
+function runClaims() {
+  const q = [...claimQueue]; claimQueue.clear();
+  if (!q.length) return;
+  Promise.all(q.map((c) => (c === 'week' ? LB.claimBudgetWeek() : LB.claimGoal(c.slice(5))))).then(() => LB.refreshLeaderboard());
+}
 function save() {
   if (!account) return;
 
@@ -31,6 +39,7 @@ function save() {
       if (account?.id !== userId) return;
 
       ui.syncStatus = 'synced';
+      runClaims();
       if (ui.tab === 'settings') render();
 
     } catch (e) {
@@ -55,6 +64,21 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const FALLBACK = Object.fromEntries(L.DEFAULT_CATEGORIES.map((c) => [c.id, c.color]));
 const cat = (id) => { const c = state.categories.find((x) => x.id === id) || { name: id, icon: '❓' }; return { ...c, color: FALLBACK[id] || c.color || '#A9B5AE' }; };
+const wallet = (id) => state.wallets.find((w) => w.id === id) || state.wallets[0];
+const displayName = () => state.profile.name || account?.name || 'Bạn';
+const applyTheme = () => { const dark = Boolean(account && state.darkMode); document.documentElement.classList.toggle('dark', dark); document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#101714' : '#F7F8F5'); };
+function award(points, title) { state.finPoints = Math.max(0, state.finPoints + points); state.pointHistory.unshift({ id: L.uid(), title, points, date: L.todayStr() }); state.pointHistory = state.pointHistory.slice(0, 60); }
+function addTxn(t) {
+  state.transactions.push(t);
+  if (t.type !== 'income' || t.transfer) return 0;
+  const a = L.applyJarAutoAllocation(state.goals, t.amount, t.date); state.goals = a.updatedJars; return a.totalAllocated;
+}
+function contribute(id, amount) {
+  const g = state.goals.find((x) => x.id === id); if (!g) return null;
+  const was = L.goalPct(g) >= 100; g.contributions.push({ amount, date: L.todayStr() });
+  const done = !was && L.goalPct(g) >= 100; if (done) { award(50, `Hoàn thành mục tiêu ${g.name}`); claimQueue.add(`goal:${g.id}`); }
+  save(); render(); toast(done ? `Hoàn thành "${g.name}"! +50 FinPoints` : `Đã góp ${vnd(amount)}`); return g;
+}
 const monthLabel = (m) => `Tháng ${Number(m.slice(5))}/${m.slice(0, 4)}`;
 const vnd = L.formatVND;
 function dayLabel(d) {
@@ -74,9 +98,10 @@ const meter = (pct, cls = '', color = '') => {
   return `<div class="meter ${cls}" style="${color ? `--c:${color}` : ''}" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"><svg viewBox="0 0 300 16" preserveAspectRatio="none" aria-hidden="true">${p < 100 ? `<line class="trk" x1="${x1}" y1="8" x2="${W}" y2="8"/>` : ''}${x1 ? `<path class="fill" d="${d}"/>` : ''}</svg></div>`;
 };
 const cookie = (cx, cy, R, n, amp) => { let d = ''; for (let k = 0; k <= 120; k++) { const t = (k / 120) * 2 * Math.PI, r = R + amp * Math.cos(n * t); d += `${k ? 'L' : 'M'}${(cx + r * Math.cos(t)).toFixed(2)} ${(cy + r * Math.sin(t)).toFixed(2)} `; } return d + 'Z'; };
-const txRow = (t) => { const c = cat(t.categoryId); return `<div class="tx"><span class="bubble" style="--c:${c.color}">${c.icon}</span>
-  <div class="grow"><div class="t">${esc(c.name)}</div>${t.note ? `<div class="n">${esc(t.note)}</div>` : ''}</div>
-  <span class="amt num ${t.type === 'income' ? 'in' : ''}">${t.type === 'income' ? '+' : '−'}${vnd(t.amount)}</span>
+const txRow = (t) => { const c = cat(t.categoryId), tr = t.transfer, w = wallet(t.walletId), sub = [t.note, w && w.shortName].filter(Boolean).join(' · ');
+  return `<div class="tx"><span class="bubble" style="--c:${tr ? '#A9B5AE' : c.color}">${tr ? '⇄' : c.icon}</span>
+  <div class="grow"><div class="t">${tr ? 'Chuyển giữa các ví' : esc(c.name)}</div>${sub ? `<div class="n">${esc(sub)}</div>` : ''}</div>
+  <span class="amt num ${t.type === 'income' && !tr ? 'in' : ''}">${t.type === 'income' ? '+' : '−'}${vnd(t.amount)}</span>
   <button class="x" data-act="deltx" data-id="${t.id}" aria-label="Xóa giao dịch">✕</button></div>`; };
 const ART = {
   coins: ['#F8DCCB', '<circle cx="64" cy="54" r="26" fill="#F7E7A8"/><text x="64" y="64" text-anchor="middle" font-size="26" font-weight="800" fill="#183C35">₫</text><circle cx="110" cy="76" r="16" fill="#E1F5EC"/><circle cx="110" cy="76" r="6" fill="#183C35"/>'],
@@ -87,8 +112,8 @@ const art = (k) => `<svg class="art" viewBox="0 0 160 124" aria-hidden="true"><p
 const empty = (kind, title, text, btn) => `<div class="empty">${art(kind)}<b>${title}</b>${text}${btn || ''}</div>`;
 const FLOW = { data: [], x: [] };
 const flowRead = (d) => `<b>${monthLabel(d.month)}</b><span class="k in">Thu ${vnd(d.income)}</span><span class="k out">Chi ${vnd(d.expense)}</span>`;
-function flowChart() {
-  const data = L.monthlyFlow(state.transactions, ui.month, 6), n = data.length; FLOW.data = data;
+function flowChart(count = 6) {
+  const data = L.monthlyFlow(state.transactions, ui.month, count), n = data.length; FLOW.data = data;
   const maxV = Math.max(...data.flatMap((d) => [d.income, d.expense]));
   if (!maxV) return empty('coins', 'Chưa có dữ liệu dòng tiền', 'Ghi vài giao dịch để xem thu chi thay đổi theo từng tháng.');
   const W = 320, H = 176, pl = 40, pr = 12, pt = 12, pb = 28, top = L.niceMax(maxV), last = n - 1;
@@ -102,7 +127,7 @@ function flowChart() {
   const labels = data.map((d, i) => `<text class="${i === last ? 'sel' : ''}" data-lab="${i}" x="${X(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">T${Number(d.month.slice(5))}</text>`).join('');
   const hits = data.map((_, i) => `<rect data-hit="${i}" x="${(X(i) - hw / 2).toFixed(1)}" y="0" width="${hw.toFixed(1)}" height="${H - pb}"/>`).join('');
   return `<div class="flow-card" id="flow"><div class="flow-read" id="flowread" aria-live="polite">${flowRead(data[last])}</div>
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Biểu đồ thu và chi 6 tháng gần nhất">${grid}
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Biểu đồ thu và chi ${count} tháng gần nhất">${grid}
       <path class="area" d="${smooth(inc)} L${X(last).toFixed(1)} ${H - pb} L${X(0).toFixed(1)} ${H - pb} Z"/>
       <line class="guide" x1="${X(last).toFixed(1)}" x2="${X(last).toFixed(1)}" y1="${pt}" y2="${H - pb}"/>
       <path class="ln out" d="${smooth(exp)}"/><path class="ln in" d="${smooth(inc)}"/>${dots(exp, 'out')}${dots(inc, 'in')}${labels}${hits}</svg></div>`;
@@ -117,7 +142,7 @@ function setFlow(i) {
 function donut(entries, total) {
   const R = 46, C = 2 * Math.PI * R, gap = entries.length > 1 ? 6 : 0; let start = 0;
   const segs = entries.map(([id, v]) => { const len = Math.max((v / total) * C - gap, 2); const el = `<circle cx="60" cy="60" r="${R}" fill="none" stroke="${cat(id).color}" stroke-width="16" stroke-linecap="round" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-start}"/>`; start += (v / total) * C; return el; }).join('');
-  return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="Biểu đồ chi tiêu theo danh mục"><g transform="rotate(-90 60 60)"><circle cx="60" cy="60" r="${R}" fill="none" stroke="#E1F5EC" stroke-width="16"/>${segs}</g>
+  return `<svg class="donut" viewBox="0 0 120 120" role="img" aria-label="Biểu đồ chi tiêu theo danh mục"><g transform="rotate(-90 60 60)"><circle class="dtrk" cx="60" cy="60" r="${R}" fill="none" stroke="#E1F5EC" stroke-width="16"/>${segs}</g>
     <text x="60" y="58" text-anchor="middle" font-size="19" font-weight="800">${L.compactVND(total)}</text><text x="60" y="73" text-anchor="middle" font-size="9" font-weight="600" style="fill:#777E79">đã chi</text></svg>`;
 }
 
@@ -143,6 +168,11 @@ function home() {
   const daysLeftBadge = ui.month === thisMonth() ? n - Number(today.slice(8)) + 1 : 0;
   const badge = daysLeftBadge ? `<svg class="badge" viewBox="0 0 100 100" role="img" aria-label="Còn ${daysLeftBadge} ngày trong tháng"><path d="${cookie(50, 50, 42, 10, 4)}" fill="#F7E7A8"/><text x="50" y="55" text-anchor="middle" font-size="30" font-weight="800" fill="#183C35">${daysLeftBadge}</text><text x="50" y="71" text-anchor="middle" font-size="11" font-weight="700" fill="#183C35">ngày</text></svg>` : '';
   const quickIds = [...ui.recent.filter((id) => cat(id).type === 'expense'), ...state.categories.filter((c) => c.type === 'expense').map((c) => c.id)].filter((id, i, arr) => arr.indexOf(id) === i && state.categories.some((c) => c.id === id)).slice(0, 5);
+  const checkedIn = state.lastCheckInDate === today, streak = L.activeStreak(state.lastCheckInDate, state.streakDays, today);
+  const streakCard = `<section class="streak" aria-label="Chuỗi ghi chép"><div><small>Chuỗi ghi chép · ${state.finPoints} FinPoints</small><b>🔥 ${streak} ngày liên tục</b></div><button class="btn ${checkedIn ? 'tonal' : 'primary'}" data-act="${checkedIn ? 'gorewards' : 'checkin'}">${checkedIn ? 'Đổi quà' : `Điểm danh +${L.CHECKIN_POINTS}đ`}</button></section>`;
+  const insights = L.generateAIInsights(state.transactions, state.categories, state.budgets, ui.month, today).slice(0, 3);
+  const insightsSec = `<section class="sec"><div class="sec-head"><h2>✨ Gợi ý từ Trợ lý AI</h2><button class="linkbtn" data-tab-go="assistant">Hỏi AI</button></div><div class="insights">${insights.map((i) => `<div class="insight ${i.tone}"><b>${esc(i.title)}</b><span>${esc(i.message)}</span></div>`).join('')}</div></section>`;
+  const goalsSec = state.goals.length ? `<section class="sec"><div class="sec-head"><h2>Hũ tiết kiệm</h2><button class="linkbtn" data-act="gojars">Quản lý hũ</button></div>${state.goals.slice(0, 3).map((g) => { const pct = L.goalPct(g); return `<article class="card mini-goal"><div class="mg-top"><b>${g.icon || '🎯'} ${esc(g.name)}</b><span class="num">${pct}%</span></div>${meter(pct)}<div class="plan-foot num"><span>${L.compactVND(L.goalSaved(g))} / ${L.compactVND(g.target)}</span><span>${g.autoAllocatePct ? `Tự trích ${g.autoAllocatePct}%` : 'Thủ công'}</span></div></article>`; }).join('')}</section>` : '';
   const tints = ['var(--peach)', 'var(--tertiary)', 'var(--lavender)', 'var(--secondary)', 'var(--peach)'];
   const quick = `<section class="sec"><div class="sec-head"><h2>Thêm nhanh</h2></div><div class="quick">${quickIds.map((id, i) => `<button class="q" data-act="addcat" data-id="${id}"><span class="qc" style="--t:${tints[i]}">${cat(id).icon}</span><small>${esc(cat(id).name)}</small></button>`).join('')}</div></section>`;
   const html = `<section class="hero" aria-label="Tóm tắt tháng">${badge}
@@ -153,11 +183,14 @@ function home() {
   <section class="stats" aria-label="Thu và chi trong tháng">
     <div class="stat a" style="--bg-c:var(--peach)"><span class="ico">${arrow('M7 17L17 7M9 7h8v8')}</span><small>Đã chi</small><b class="num">${vnd(s.expense)}</b></div>
     <div class="stat b" style="--bg-c:var(--tertiary)"><span class="ico">${arrow('M17 7L7 17M15 17H7V9')}</span><small>Đã thu</small><b class="num">${vnd(s.income)}</b></div></section>
+  ${streakCard}
   ${quick}
+  ${insightsSec}
   <section class="sec"><div class="sec-head"><h2>Tiền đã đi đâu</h2></div>
     ${cats.length ? `<div class="donut-card">${donut(cats, s.expense)}<ul class="legend">${cats.map(([id, v]) => `<li><span class="dot" style="--c:${cat(id).color}"></span><div><b>${cat(id).icon} ${esc(cat(id).name)}</b><small class="num">${v >= 1_000_000 ? L.compactVND(v) : vnd(v)} · ${v / s.expense > 0 && Math.round((v / s.expense) * 100) === 0 ? '&lt;1' : Math.round((v / s.expense) * 100)}%</small></div></li>`).join('')}</ul></div>`
       : empty('coins', 'Chưa có khoản chi nào', 'Bấm Thêm để ghi khoản chi đầu tiên của tháng.')}</section>
   <section class="sec"><div class="sec-head"><h2>Dòng tiền 6 tháng</h2></div>${flowChart()}</section>
+  ${goalsSec}
   <section class="sec"><div class="sec-head"><h2>Gần đây</h2>${recent.length ? '<button class="linkbtn" data-tab-go="tx">Xem tất cả</button>' : ''}</div>
     ${recent.length ? `<div class="list">${recent.map((t) => txRow(t)).join('')}</div>` : ''}</section>`;
   ui.entered = true; return html;
@@ -165,7 +198,7 @@ function home() {
 
 function txListHtml() {
   const q = ui.q.trim();
-  const list = state.transactions.filter((t) => (q ? L.matchTx(t, q, cat(t.categoryId).name) : L.monthKey(t.date) === ui.month)).sort((a, b) => b.date.localeCompare(a.date) || (b.id > a.id ? 1 : -1));
+  const list = state.transactions.filter((t) => (ui.walletFilter === 'all' || (t.walletId || 'cash') === ui.walletFilter) && (q ? L.matchTx(t, q, cat(t.categoryId).name) : L.monthKey(t.date) === ui.month)).sort((a, b) => b.date.localeCompare(a.date) || (b.id > a.id ? 1 : -1));
   if (!list.length) return q ? empty('coins', 'Không tìm thấy giao dịch', `Không có kết quả cho "${esc(q)}". Thử từ khóa khác.`)
     : empty('coins', 'Chưa có giao dịch trong tháng này', 'Mỗi khoản thu chi bạn ghi sẽ hiện ở đây.', '<br><button class="btn primary" data-act="add">Thêm giao dịch</button>');
   const groups = {}; for (const t of list) (groups[t.date] ||= []).push(t);
@@ -173,13 +206,20 @@ function txListHtml() {
     const net = items.reduce((a, t) => a + (t.type === 'income' ? t.amount : -t.amount), 0);
     return `<div class="day"><span>${q ? d.split('-').reverse().join('/') : dayLabel(d)}</span><span class="num">${net > 0 ? '+' : net < 0 ? '−' : ''}${vnd(Math.abs(net))}</span></div>${items.map(txRow).join('')}`; }).join('')}</div>`;
 }
+function walletStrip() {
+  const bal = L.computeWalletBalances(state.wallets, state.transactions), total = Object.values(bal).reduce((a, b) => a + b, 0);
+  return `<section class="sec wal-sec" style="margin-top:4px"><div class="sec-head"><h2>Đa ví · <span class="num">${vnd(total)}</span></h2><button class="linkbtn" data-act="editwallets">Số dư đầu</button></div>
+    <div class="wallets" role="group" aria-label="Lọc theo ví"><button type="button" class="wallet" aria-pressed="${ui.walletFilter === 'all'}" data-wallet="all"><small>Tất cả ví</small><b class="num">${vnd(total)}</b></button>
+    ${state.wallets.map((w) => `<button type="button" class="wallet" aria-pressed="${ui.walletFilter === w.id}" data-wallet="${w.id}"><small>${w.icon} ${esc(w.shortName || w.name)}</small><b class="num">${vnd(bal[w.id] || 0)}</b></button>`).join('')}</div>
+    <div class="row-actions" style="margin-top:10px"><button class="btn" data-act="transfer">⇄ Chuyển ví</button><button class="btn" data-act="exportcsv">↓ Xuất CSV</button></div></section>`;
+}
 function txs() {
-  return `<div class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><input id="q" type="search" value="${esc(ui.q)}" placeholder="Tìm theo ghi chú hoặc danh mục" aria-label="Tìm giao dịch" autocomplete="off"></div>
+  return walletStrip() + `<div class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><input id="q" type="search" value="${esc(ui.q)}" placeholder="Tìm theo ghi chú hoặc danh mục" aria-label="Tìm giao dịch" autocomplete="off"></div>
     <p class="hint" id="qhint">${ui.q.trim() ? 'Đang tìm trong tất cả các tháng.' : ''}</p><div id="txlist">${txListHtml()}</div>`;
 }
 
 function plan() {
-  const seg = `<div class="seg" role="group" aria-label="Chọn kế hoạch"><button aria-pressed="${ui.plan === 'budget'}" data-plan="budget">Ngân sách</button><button aria-pressed="${ui.plan === 'goals'}" data-plan="goals">Mục tiêu tiết kiệm</button></div>`;
+  const seg = `<div class="seg" role="group" aria-label="Chọn kế hoạch"><button aria-pressed="${ui.plan === 'budget'}" data-plan="budget">Ngân sách</button><button aria-pressed="${ui.plan === 'goals'}" data-plan="goals">Hũ tiết kiệm</button><button aria-pressed="${ui.plan === 'debts'}" data-plan="debts">Sổ nợ</button></div>`;
   if (ui.plan === 'budget') {
     const st = L.budgetStatus(state.budgets, state.transactions, ui.month);
     return seg + `<p class="hint" style="margin:12px 2px">Ngân sách áp dụng cho mọi tháng. Số liệu bên dưới là của ${monthLabel(ui.month).toLowerCase()}.</p>` +
@@ -189,15 +229,66 @@ function plan() {
           ${meter(b.pct, b.over ? 'over' : b.warn ? 'warn' : '', b.categoryId ? c.color : '')}
           <div class="plan-foot num"><span>Đã dùng ${vnd(b.spent)} (${b.pct}%)</span><span class="${b.over ? 'bad' : ''}">${b.over ? 'Vượt ' + vnd(-b.remaining) : 'Còn ' + vnd(b.remaining)}</span></div></article>`; }).join('')
         : `<div class="list" style="margin-top:12px">${empty('sprout', 'Chưa có ngân sách', 'Đặt một tổng ngân sách để màn hình Hôm nay cho bạn biết mỗi ngày tiêu được bao nhiêu.')}</div>`) +
-      '<button class="btn primary block" data-act="addbudget">Đặt ngân sách</button>';
+      aiPlanCard() + '<button class="btn primary block" data-act="addbudget">Đặt ngân sách</button>';
   }
+  if (ui.plan === 'debts') return seg + debtsHtml();
   return seg + (state.goals.length ? state.goals.map((g) => { const pct = L.goalPct(g);
-    return `<article class="card plan"><div class="plan-top"><span class="bubble" style="--c:#E8C547">🎯</span><div class="grow"><b>${esc(g.name)}</b>${g.deadline ? `<div style="color:var(--mute);font-size:.85rem">Hạn ${g.deadline.split('-').reverse().join('/')}</div>` : ''}</div>
-      <span class="big num">${pct}%</span><button class="x" data-act="delgoal" data-id="${g.id}" aria-label="Xóa mục tiêu">✕</button></div>
+    return `<article class="card plan"><div class="plan-top"><span class="bubble" style="--c:#E8C547">${g.icon || '🎯'}</span><div class="grow"><b>${esc(g.name)}</b>${g.deadline ? `<div style="color:var(--mute);font-size:.85rem">Hạn ${g.deadline.split('-').reverse().join('/')}</div>` : ''}<div style="color:var(--mute);font-size:.82rem">${g.autoAllocatePct ? `Tự trích ${g.autoAllocatePct}% mỗi khoản thu` : 'Góp thủ công'}</div></div>
+      <span class="big num">${pct}%</span><button class="x" data-act="editgoal" data-id="${g.id}" aria-label="Sửa mục tiêu">✎</button><button class="x" data-act="delgoal" data-id="${g.id}" aria-label="Xóa mục tiêu">✕</button></div>
       ${meter(pct, '', '')}<div class="plan-foot num"><span>${vnd(L.goalSaved(g))} / ${vnd(g.target)}</span><span>${pct >= 100 ? 'Đã đạt mục tiêu 🎉' : 'Còn ' + vnd(g.target - L.goalSaved(g))}</span></div>
-      <div class="row-actions" style="margin:0"><button class="btn" data-act="contrib" data-id="${g.id}">Góp tiền</button><button class="btn" data-act="contrib250" data-id="${g.id}">+250k</button></div></article>`; }).join('')
-    : `<div class="list" style="margin-top:12px">${empty('target', 'Chưa có mục tiêu', 'Đặt một món bạn muốn mua hoặc một khoản muốn dành dụm, rồi góp dần.')}</div>`) +
+      <div class="row-actions" style="margin:0"><button class="btn" data-act="contrib" data-id="${g.id}">Góp tiền</button><button class="btn" data-act="contrib100" data-id="${g.id}">+100k</button><button class="btn" data-act="contrib250" data-id="${g.id}">+250k</button></div></article>`; }).join('')
+    : `<div class="list" style="margin-top:12px">${empty('target', 'Chưa có mục tiêu', 'Đặt một món bạn muốn mua hoặc một khoản muốn dành dụm, rồi góp dần hoặc để FinMate tự trích % từ thu nhập.')}</div>`) +
     '<button class="btn primary block" data-act="addgoal">Tạo mục tiêu</button>';
+}
+
+function aiPlanCard() {
+  const income = L.summarize(state.transactions, ui.month).income, inc = income || 1_800_000, p = L.generateAutoBudgetPlan(inc);
+  return `<article class="card ai-plan"><h2>✨ Chia ngân sách tự động (AI)</h2><p>Thu nhập cơ sở: <b class="num">${vnd(inc)}</b>${income ? '' : ' (mức mẫu, tháng này chưa có thu nhập)'} · Tiết kiệm 20% (<b class="num">${vnd(p.savingSuggestion)}</b>)</p>
+    <div class="ai-rows">${p.allocations.map((a) => `<div><span>${esc(a.name)} (${a.pct}%)</span><b class="num">${vnd(a.limit)}</b></div>`).join('')}<div class="tot"><span>Tổng ngân sách chi</span><b class="num">${vnd(p.totalLimit)}</b></div></div>
+    <button class="btn primary block" data-act="applyautobudget" data-id="${inc}">Áp dụng kế hoạch AI</button></article>`;
+}
+function debtsHtml() {
+  const dt = L.computeDebtTotals(state.debts), list = [...state.debts].sort((a, b) => Number(a.settled) - Number(b.settled) || b.date.localeCompare(a.date));
+  return `<div class="debt-sum"><div style="--bg-c:var(--secondary)"><small>Cho vay</small><b class="num">${vnd(dt.receivable)}</b></div><div style="--bg-c:var(--peach)"><small>Đang vay</small><b class="num">${vnd(dt.payable)}</b></div><div style="--bg-c:var(--surface)"><small>Ròng</small><b class="num">${dt.net < 0 ? '−' : ''}${vnd(Math.abs(dt.net))}</b></div></div>
+    ${list.length ? `<div class="list" style="margin-top:12px">${list.map((d) => `<div class="tx${d.settled ? ' done' : ''}"><div class="grow"><div class="t">${d.direction === 'lend' ? `Cho ${esc(d.personName)} vay` : `Mình vay ${esc(d.personName)}`}</div><div class="n">${esc(d.note)}${d.className ? ' · Lớp ' + esc(d.className) : ''} · ${d.date.split('-').reverse().join('/')}</div></div><span class="amt num ${d.direction === 'lend' ? 'in' : ''}">${vnd(d.amount)}</span>${d.settled ? '<small class="mute-s">Đã tất toán</small>' : `<button class="btn sm" data-act="settledebt" data-id="${d.id}">Tất toán</button>`}<button class="x" data-act="deldebt" data-id="${d.id}" aria-label="Xóa khoản nợ">✕</button></div>`).join('')}</div>`
+      : `<div class="list" style="margin-top:12px">${empty('coins', 'Chưa có khoản nợ nào', 'Ghi lại tiền bạn bè ứng hộ hoặc mình cho mượn để không quên.')}</div>`}
+    <button class="btn primary block" data-act="adddebt">Ghi khoản nợ</button>`;
+}
+
+function rewards() {
+  const today = L.todayStr(), s = L.summarize(state.transactions, ui.month), checkedIn = state.lastCheckInDate === today;
+  const overall = state.budgets.find((b) => b.categoryId === null), underBudget = !overall || s.expense <= overall.limit;
+  const wk = L.currentWeekKey(today), weekClaimed = state.weeklyBudgetBonusClaimedWeek === wk;
+  const streak = L.activeStreak(state.lastCheckInDate, state.streakDays, today);
+  const saved = Math.max(0, s.balance), rate = s.income > 0 ? Math.round((saved / s.income) * 100) : 0, pr = state.profile;
+  return `<section class="reward-banner"><small>Điểm thưởng tích lũy</small><div class="pts num">${state.finPoints} <span>FinPoints</span></div>
+      <p>Chuỗi ${streak} ngày · Đổi voucher quanh ${esc(pr.school)}</p>
+      <div class="streak-row">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<div class="streak-pill ${n <= streak ? 'on' : ''}">N${n}</div>`).join('')}</div>
+      <div class="row-actions" style="margin-top:14px"><button class="btn gold" ${checkedIn ? 'disabled' : ''} data-act="checkin">${checkedIn ? 'Đã điểm danh hôm nay' : `Điểm danh +${L.CHECKIN_POINTS} FinPoints`}</button>
+      <button class="btn ghost" ${weekClaimed || !underBudget ? 'disabled' : ''} data-act="claimweek">${weekClaimed ? 'Đã nhận thưởng tuần' : underBudget ? 'Thưởng giữ ngân sách +50đ' : 'Đang vượt ngân sách'}</button></div></section>
+    <section class="card"><h2>Lịch sử FinPoints</h2>${state.pointHistory.length ? state.pointHistory.slice(0, 6).map((p) => `<div class="hist"><span>${esc(p.title)}</span><b class="num ${p.points >= 0 ? 'pos' : 'neg'}">${p.points >= 0 ? '+' : ''}${p.points}đ</b></div>`).join('') : '<p>Điểm danh hoặc hoàn thành hũ tiết kiệm để nhận FinPoints đầu tiên.</p>'}</section>
+    <section class="sec"><div class="sec-head"><h2>Đối tác quanh trường Mạc Đĩnh Chi</h2></div><div class="vouchers">${L.MAC_DINH_CHI_VOUCHERS.map((v) => `<article class="card voucher" style="--acc:${v.accent}"><p>${esc(v.merchant)}</p><h3>${esc(v.title)}</h3><div class="v-foot"><b class="num">${v.costPoints} FinPoints</b><button class="btn primary sm" ${state.finPoints < v.costPoints ? 'disabled' : ''} data-act="redeem" data-id="${v.id}">Đổi lấy mã QR</button></div></article>`).join('')}</div></section>
+    ${state.redeemedVouchers.length ? `<section class="card"><h2>Voucher của tôi</h2>${state.redeemedVouchers.map((rv) => `<div class="hist"><div><b>${esc(rv.discountLabel)}</b> · ${esc(rv.merchant)}<div class="code">${esc(rv.code)}</div></div><button class="btn sm" data-act="openqr" data-id="${rv.id}">Mở mã QR</button></div>`).join('')}</section>` : ''}
+    <section class="card lb" id="lb-root" aria-live="polite"><p class="lb-empty">Đang tải bảng xếp hạng…</p></section>`;
+}
+
+function assistant() {
+  const today = L.todayStr(), fc = L.generateForecast(state.transactions, state.budgets, ui.month, today), cmp = L.buildComparisonReport(state.transactions, state.categories, ui.month);
+  const chat = state.chatHistory.length ? state.chatHistory : [{ role: 'assistant', text: `Chào ${displayName()}! Hỏi mình về chi tiêu ăn uống, dự báo ngày hết tiền hoặc chia ngân sách tự động nhé.` }];
+  return `<section class="card premium"><div><h2>👑 ${state.isPremium ? 'FinMate Premium HSSV đang bật' : 'FinMate Premium · 179.000 ₫/tháng (ưu đãi HSSV 49k)'}</h2><p>Đồng bộ ngân hàng Casso/SePay, chatbot tư vấn sâu, báo cáo 12 tháng & không quảng cáo.</p></div>
+      <button class="btn ${state.isPremium ? '' : 'primary'}" data-act="togglepremium">${state.isPremium ? 'Đang dùng Premium' : 'Trải nghiệm Premium'}</button></section>
+    ${state.isPremium ? '' : '<div class="ad">Quảng cáo bản Free: Giảm 20% dụng cụ học tập cho học sinh Mạc Đĩnh Chi.</div>'}
+    <section class="card"><h2>✨ Chatbot tư vấn tài chính</h2>
+      <div class="chat-log" id="chat-log" aria-live="polite">${chat.map((m) => `<div class="msg ${m.role === 'user' ? 'user' : 'bot'}">${esc(m.text)}</div>`).join('')}</div>
+      <div class="chips"><button type="button" class="chip" data-prompt="Tháng này mình tiêu nhiều vào ăn uống quá, làm sao để bớt?">Bớt tiền ăn uống?</button><button type="button" class="chip" data-prompt="Dự báo cuối tháng mình có hết tiền không?">Dự báo cuối tháng</button><button type="button" class="chip" data-prompt="Gợi ý chia ngân sách tự động">Chia ngân sách AI</button></div>
+      <form id="chatform" class="chatform"><input id="chat-input" type="text" placeholder="Hỏi trợ lý AI..." aria-label="Nhập câu hỏi" autocomplete="off"><button type="submit" class="btn primary">Gửi</button></form></section>
+    <section class="card"><h2>📈 Dự báo dòng tiền</h2><div class="fc-pair"><div><small>Tiêu mỗi ngày</small><b class="num">${vnd(fc.dailyBurnRate)}</b></div><div><small>Dự kiến cả tháng</small><b class="num">${vnd(fc.projectedMonthEndSpend)}</b></div></div><p class="fc-note">${esc(fc.summaryText)}</p></section>
+    <section class="card"><h2>🏦 Tích hợp ngân hàng (${esc(state.bankSync.provider)}) · bản mô phỏng</h2><p>${esc(state.bankSync.bankName)} (${esc(state.bankSync.accountMask)}) · Đồng bộ lúc ${esc(state.bankSync.lastSyncedAt)}</p>
+      <button class="btn primary block" style="margin-top:12px" data-act="banksync">↻ Đồng bộ giao dịch ngân hàng ngay</button></section>
+    <section class="sec"><div class="sec-head"><h2>Báo cáo ${ui.trendRange} tháng</h2><div class="rng"><button class="btn sm ${ui.trendRange === 6 ? 'primary' : ''}" data-range="6">6 tháng</button><button class="btn sm ${ui.trendRange === 12 ? 'primary' : ''}" data-range="12">12 tháng</button></div></div>${flowChart(ui.trendRange)}</section>
+    <section class="card"><h2>So sánh với tháng trước</h2><p>${monthLabel(ui.month)} so với ${monthLabel(cmp.prevMonth)}</p>
+      ${cmp.rows.length ? `<div class="tbl"><table><thead><tr><th>Danh mục</th><th>Tháng trước</th><th>Tháng này</th><th>Chênh</th></tr></thead><tbody>${cmp.rows.map((r) => `<tr><td>${r.icon} ${esc(cat(r.id).name)}</td><td class="num">${vnd(r.prevVal)}</td><td class="num"><b>${vnd(r.currentVal)}</b></td><td class="num ${r.diff > 0 ? 'neg' : 'pos'}">${r.diff > 0 ? '+' : ''}${r.diffPct}%</td></tr>`).join('')}</tbody></table></div>` : '<p style="margin-top:10px">Chưa có chi tiêu ở hai tháng này để so sánh.</p>'}
+      <div class="row-actions"><button class="btn" data-act="exportcsv">↓ Xuất CSV</button></div></section>`;
 }
 
 function settings() {
@@ -212,20 +303,40 @@ function settings() {
     <p class="hint" style="margin-top:4px">Trạng thái: <b>${syncLabel}</b></p>
     <div class="row-actions"><button class="btn primary" data-act="logout">Đăng xuất</button><button class="btn" data-act="chpass">Đổi mật khẩu</button></div>
   </section>
+  <section class="card"><h2>🌙 Giao diện</h2><p>Chế độ Tối giúp dễ nhìn hơn vào buổi tối. Lựa chọn được lưu theo tài khoản.</p>
+    <div class="row-actions"><button class="btn primary" data-act="toggledark">${state.darkMode ? 'Bật Chế độ Sáng' : 'Bật Chế độ Tối'}</button></div></section>
+  <form class="card" id="profileform"><h2>🎓 Hồ sơ học sinh</h2><p>Dùng cho bảng xếp hạng và voucher quanh trường.</p>
+    <label for="pname">Tên hiển thị</label><input id="pname" maxlength="30" value="${esc(state.profile.name || account.name)}">
+    <label for="pclass">Lớp</label><input id="pclass" maxlength="10" value="${esc(state.profile.className)}">
+    <label for="pgrade">Khối</label><select id="pgrade">${[10, 11, 12].map((g) => `<option value="${g}" ${state.profile.grade === g ? 'selected' : ''}>Khối ${g}</option>`).join('')}</select>
+    <label for="pschool">Trường</label><input id="pschool" maxlength="60" value="${esc(state.profile.school)}">
+    <button type="submit" class="btn primary block">Lưu hồ sơ</button></form>
   <section class="card"><h2>Sao lưu & xuất dữ liệu</h2><p>Dữ liệu tự động đồng bộ trên mọi thiết bị của bạn. Bạn cũng có thể tải bản sao lưu thủ công bất cứ lúc nào.</p>
-    <div class="row-actions"><button class="btn primary" data-act="exportjson">Sao lưu (JSON)</button><button class="btn" data-act="exportcsv">Xuất CSV</button><button class="btn" data-act="import">Khôi phục từ file</button></div>
+    <div class="row-actions"><button class="btn primary" data-act="exportjson">Sao lưu (JSON)</button><button class="btn" data-act="exportcsv">Xuất CSV</button><button class="btn" data-act="import">Khôi phục từ file</button><button class="btn" data-act="editwallets">Số dư ví ban đầu</button></div>
     <input id="file" type="file" accept="application/json" hidden></section>
+  <section class="card"><h2>Dữ liệu mẫu</h2><p>Muốn xem FinMate khi đã có dữ liệu? Nạp bộ dữ liệu mẫu (giao dịch 6 tháng, 4 ví, hũ tiết kiệm, sổ nợ). Dữ liệu hiện tại sẽ bị thay thế.</p>
+    <div class="row-actions"><button class="btn" data-act="loaddemo">Nạp dữ liệu mẫu</button></div></section>
   <section class="card"><h2>Quyền riêng tư</h2><p>FinMate không hỏi mật khẩu ngân hàng và không giữ tiền. Dữ liệu tài chính của bạn được bảo vệ theo tài khoản cá nhân trên đám mây.</p>
     <div class="row-actions"><button class="btn danger" data-act="wipe">Xóa toàn bộ dữ liệu của tôi</button></div></section>`;
 }
 
-const SCREENS = { home: ['Hôm nay', home, true], tx: ['Giao dịch', txs, true], plan: ['Kế hoạch', plan, false], settings: ['Cài đặt', settings, false] };
+const SCREENS = { home: ['Hôm nay', home, true], tx: ['Giao dịch', txs, true], plan: ['Kế hoạch', plan, false], rewards: ['Thưởng', rewards, false], assistant: ['Trợ lý AI', assistant, true], settings: ['Cài đặt', settings, false] };
 function render() {
   if (!account) return;
+  applyTheme();
   const [title, fn, monthly] = SCREENS[ui.tab];
   const showMonth = monthly || (ui.tab === 'plan' && ui.plan === 'budget');
   $('#bar').innerHTML = `<h1>${title}</h1>${showMonth ? `<div class="pill"><button data-act="mprev" aria-label="Tháng trước">‹</button><b>${monthLabel(ui.month)}</b><button data-act="mnext" aria-label="Tháng sau">›</button></div>` : ''}`;
   $('#view').innerHTML = fn();
+  const cl = $('#chat-log'); if (cl) cl.scrollTop = cl.scrollHeight;
+  const lbEl = $('#lb-root');
+  if (lbEl) {
+    const tdy = L.todayStr();
+    state.goals.filter((g) => L.goalPct(g) >= 100 && !triedGoals.has(g.id)).forEach((g) => { triedGoals.add(g.id); claimQueue.add(`goal:${g.id}`); });
+    if (ui.syncStatus === 'synced') runClaims();
+    LB.mountLeaderboard(lbEl, { claimToday: state.lastCheckInDate === tdy });
+  }
+  const tb = $('#theme-state'); if (tb) tb.textContent = state.darkMode ? 'Bật' : 'Tắt';
   document.querySelectorAll('#nav [data-tab]').forEach((b) => { if (b.dataset.tab === ui.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
 }
 
@@ -247,16 +358,19 @@ function wireMoney(name) {
 const need = (v) => { const n = L.parseAmount(v); if (!(n > 0)) { toast('Nhập số tiền lớn hơn 0.'); return null; } return n; };
 
 function addTx(pre) {
+  let walletId = state.wallets.some((w) => w.id === ui.lastWallet) ? ui.lastWallet : state.wallets[0].id;
   let type = 'expense', catId = (typeof pre === 'string' && pre) || ui.recent.find((id) => cat(id).type === 'expense') || 'food';
   sheet('Thêm giao dịch', `<div class="seg type" data-type="expense" id="types"><button type="button" data-type="expense">Chi</button><button type="button" data-type="income">Thu</button></div>
     ${money()}<div class="chips" id="quick">${[10000, 20000, 50000, 100000].map((v) => `<button type="button" class="chip quick" data-add="${v}">+${v / 1000}k</button>`).join('')}</div>
     <label>Danh mục</label><div class="chips" id="cats"></div>
+    <label>Ví</label><div class="chips" id="wals"></div>
     <label for="date">Ngày</label><input id="date" name="date" type="date" value="${L.todayStr()}" max="${L.todayStr()}">
     <label for="note">Ghi chú (không bắt buộc)</label><input id="note" name="note" maxlength="80" placeholder="VD: trà sữa với bạn">`, 'Lưu giao dịch', (fd) => {
     const amount = need(fd.get('amount')); if (!amount) return false;
     const date = fd.get('date') || L.todayStr();
-    state.transactions.push({ id: L.uid(), type, amount, categoryId: catId, date, note: fd.get('note').trim() });
-    pushRecent(catId); ui.month = L.monthKey(date); save(); render(); toast('Đã lưu giao dịch');
+    const alloc = addTxn({ id: L.uid(), type, amount, categoryId: catId, walletId, date, note: fd.get('note').trim() });
+    ui.lastWallet = walletId; pushRecent(catId); ui.month = L.monthKey(date); save(); render();
+    toast(alloc ? `Đã lưu · tự trích ${vnd(alloc)} vào hũ tiết kiệm` : 'Đã lưu giao dịch');
   });
   const amountEl = wireMoney('amount');
   const draw = () => {
@@ -264,6 +378,7 @@ function addTx(pre) {
     if (!cats.some((c) => c.id === catId)) catId = cats[0].id;
     const rank = (id) => { const i = ui.recent.indexOf(id); return i < 0 ? 99 : i; };
     dlg.querySelector('#cats').innerHTML = [...cats].sort((a, b) => rank(a.id) - rank(b.id)).map((c) => `<button type="button" class="chip" style="--c:${cat(c.id).color}" aria-pressed="${c.id === catId}" data-cat="${c.id}">${c.icon} ${esc(c.name)}</button>`).join('');
+    dlg.querySelector('#wals').innerHTML = state.wallets.map((w) => `<button type="button" class="chip" aria-pressed="${w.id === walletId}" data-wal="${w.id}">${w.icon} ${esc(w.shortName || w.name)}</button>`).join('');
     dlg.querySelector('#types').dataset.type = type;
     dlg.querySelectorAll('[data-type]').forEach((b) => b.tagName === 'BUTTON' && b.setAttribute('aria-pressed', b.dataset.type === type));
   };
@@ -271,6 +386,7 @@ function addTx(pre) {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.type) { type = b.dataset.type; draw(); }
     if (b.dataset.cat) { catId = b.dataset.cat; draw(); }
+    if (b.dataset.wal) { walletId = b.dataset.wal; draw(); }
     if (b.dataset.add) { const cur = L.parseAmount(amountEl.value); amountEl.value = String((Number.isNaN(cur) ? 0 : cur) + Number(b.dataset.add)); amountEl.dispatchEvent(new Event('input')); amountEl.focus(); }
   });
   draw(); amountEl.focus();
@@ -293,19 +409,73 @@ function addBudget(prefill) {
 }
 function addGoal() {
   sheet('Tạo mục tiêu tiết kiệm', `<label for="n">Bạn muốn dành tiền cho gì?</label><input id="n" name="n" maxlength="60" placeholder="VD: Laptop mới">
-    <label>Số tiền cần đạt</label>${money('target')}<label for="d">Hạn (không bắt buộc)</label><input id="d" name="d" type="date">`, 'Tạo mục tiêu', (fd) => {
+    <label>Số tiền cần đạt</label>${money('target')}<label for="d">Hạn (không bắt buộc)</label><input id="d" name="d" type="date">
+    <label for="pct">Tự động trích % từ mỗi khoản thu (0 = góp thủ công)</label><input id="pct" name="pct" type="number" min="0" max="50" value="10" inputmode="numeric">`, 'Tạo mục tiêu', (fd) => {
     const name = fd.get('n').trim(); if (!name) { toast('Nhập tên mục tiêu.'); return false; }
     const target = need(fd.get('target')); if (!target) return false;
-    state.goals.push({ id: L.uid(), name, target, deadline: fd.get('d') || '', contributions: [] }); save(); render(); toast('Đã tạo mục tiêu');
+    state.goals.push({ id: L.uid(), name, icon: '🎯', target, deadline: fd.get('d') || '', autoAllocatePct: Math.max(0, Math.min(50, Math.round(Number(fd.get('pct')) || 0))), contributions: [] }); save(); render(); toast('Đã tạo mục tiêu');
   });
   wireMoney('target'); dlg.querySelector('#n').focus();
+}
+function editGoal(id) {
+  const g = state.goals.find((x) => x.id === id); if (!g) return;
+  sheet('Sửa hũ tiết kiệm', `<label for="n">Tên mục tiêu</label><input id="n" name="n" maxlength="60" value="${esc(g.name)}">
+    <label>Số tiền cần đạt</label>${money('target')}<label for="d">Hạn (không bắt buộc)</label><input id="d" name="d" type="date" value="${esc(g.deadline || '')}">
+    <label for="pct">Tự động trích % từ mỗi khoản thu (0 = góp thủ công)</label><input id="pct" name="pct" type="number" min="0" max="50" value="${g.autoAllocatePct || 0}" inputmode="numeric">`, 'Lưu thay đổi', (fd) => {
+    const name = fd.get('n').trim(); if (!name) { toast('Nhập tên mục tiêu.'); return false; }
+    const target = need(fd.get('target')); if (!target) return false;
+    Object.assign(g, { name, target, deadline: fd.get('d') || '', autoAllocatePct: Math.max(0, Math.min(50, Math.round(Number(fd.get('pct')) || 0))) }); save(); render(); toast('Đã cập nhật mục tiêu');
+  });
+  const t = wireMoney('target'); t.value = String(g.target); t.dispatchEvent(new Event('input'));
 }
 function contrib(id) {
   sheet('Góp tiền vào mục tiêu', money(), 'Góp tiền', (fd) => {
     const amount = need(fd.get('amount')); if (!amount) return false;
-    state.goals.find((g) => g.id === id).contributions.push({ amount, date: L.todayStr() }); save(); render(); toast('Đã góp tiền');
+    contribute(id, amount);
   });
   wireMoney('amount').focus();
+}
+
+function transferSheet() {
+  const opts = (sel) => state.wallets.map((w) => `<option value="${w.id}"${w.id === sel ? ' selected' : ''}>${w.icon} ${esc(w.name)}</option>`).join('');
+  const from = wallet(ui.lastWallet).id, to = (state.wallets.find((w) => w.id !== from) || state.wallets[0]).id;
+  sheet('Chuyển tiền giữa các ví', `<label for="xf">Từ ví</label><select id="xf" name="xf">${opts(from)}</select><label for="xt">Sang ví</label><select id="xt" name="xt">${opts(to)}</select>${money()}
+    <p class="hint">Chuyển ví không tính vào thu hay chi của tháng.</p>`, 'Chuyển tiền', (fd) => {
+    const a = fd.get('xf'), b = fd.get('xt'); if (a === b) { toast('Chọn 2 ví khác nhau.'); return false; }
+    const amount = need(fd.get('amount')); if (!amount) return false;
+    const date = L.todayStr(), transferId = L.uid();
+    state.transactions.push({ id: L.uid(), type: 'expense', amount, categoryId: 'other-exp', walletId: a, date, note: `Chuyển sang ${wallet(b).shortName}`, transfer: true, transferId },
+      { id: L.uid(), type: 'income', amount, categoryId: 'other-inc', walletId: b, date, note: `Nhận từ ${wallet(a).shortName}`, transfer: true, transferId });
+    ui.month = L.monthKey(date); save(); render(); toast(`Đã chuyển ${vnd(amount)} sang ${wallet(b).shortName}`);
+  });
+  wireMoney('amount').focus();
+}
+function walletsSheet() {
+  sheet('Số dư ví ban đầu', `<p class="hint">Số tiền có sẵn trong mỗi ví trước khi bạn bắt đầu ghi chép.</p>${state.wallets.map((w) => `<label for="w-${w.id}">${w.icon} ${esc(w.name)}</label><input id="w-${w.id}" name="w-${w.id}" inputmode="decimal" autocomplete="off" value="${w.initialBalance || 0}">`).join('')}`, 'Lưu số dư', (fd) => {
+    const next = [];
+    for (const w of state.wallets) { const v = L.parseAmount(fd.get('w-' + w.id)); if (Number.isNaN(v) || v < 0) { toast(`Số dư ví "${w.name}" chưa hợp lệ.`); return false; } next.push({ ...w, initialBalance: v }); }
+    state.wallets = next; save(); render(); toast('Đã cập nhật số dư ví');
+  });
+}
+function debtSheet() {
+  sheet('Ghi sổ nợ bạn bè', `<label for="dir">Loại khoản</label><select id="dir" name="dir"><option value="lend">Mình cho bạn vay</option><option value="borrow">Mình vay của bạn</option></select>
+    <label for="who">Tên bạn bè</label><input id="who" name="who" maxlength="40" placeholder="VD: Khánh Vy"><label for="cls">Lớp (không bắt buộc)</label><input id="cls" name="cls" maxlength="10" placeholder="VD: 10A10">
+    <label>Số tiền</label>${money()}<label for="dw">Ví giao dịch</label><select id="dw" name="dw">${state.wallets.map((w) => `<option value="${w.id}"${w.id === ui.lastWallet ? ' selected' : ''}>${w.icon} ${esc(w.name)}</option>`).join('')}</select>
+    <label for="dn">Ghi chú</label><input id="dn" name="dn" maxlength="80" placeholder="VD: Ứng tiền trà sữa">`, 'Lưu sổ nợ', (fd) => {
+    const personName = fd.get('who').trim(); if (!personName) { toast('Nhập tên bạn bè.'); return false; }
+    const amount = need(fd.get('amount')); if (!amount) return false;
+    state.debts.unshift({ id: L.uid(), direction: fd.get('dir'), personName, className: fd.get('cls').trim().toUpperCase(), amount, date: L.todayStr(), note: fd.get('dn').trim() || 'Ứng tiền', walletId: fd.get('dw'), settled: false });
+    save(); render(); toast('Đã ghi vào sổ nợ');
+  });
+  wireMoney('amount');
+  dlg.querySelector('#who').focus();
+}
+function qrSheet(rv) {
+  const cells = Array.from({ length: 49 }, (_, i) => ((i * 7 + rv.code.charCodeAt(i % rv.code.length)) % 2 === 0 ? `<rect x="${(i % 7) * 10}" y="${Math.floor(i / 7) * 10}" width="8" height="8" rx="1.5" fill="#183C35"/>` : '')).join('');
+  dlg.innerHTML = `<div class="sheet qr"><h2>Mã QR voucher</h2><p class="hint">${esc(rv.merchant)}</p><b>${esc(rv.title)}</b><div class="qrbox"><svg width="140" height="140" viewBox="0 0 70 70" role="img" aria-label="Mã QR ${esc(rv.code)}" style="stroke:none">${cells}</svg></div><div class="code">${esc(rv.code)}</div><button type="button" class="btn primary block" data-close>Xong</button></div>`;
+  dlg.onclick = (e) => { if (e.target === dlg) dlg.close(); };
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  dlg.showModal();
 }
 
 /* ---------- actions ---------- */
@@ -314,10 +484,56 @@ const actions = {
   add: () => addTx(), addcat: (id) => addTx(id), addbudget: () => addBudget(), 'addbudget-total': () => addBudget(true), addgoal: addGoal, contrib,
   mprev: () => { ui.month = L.shiftMonth(ui.month, -1); render(); },
   mnext: () => { ui.month = L.shiftMonth(ui.month, 1); render(); },
-  deltx: (id) => { const i = state.transactions.findIndex((t) => t.id === id), [gone] = state.transactions.splice(i, 1); save(); render();
-    toast('Đã xóa giao dịch', { label: 'Hoàn tác', run: () => { state.transactions.splice(i, 0, gone); save(); render(); } }); },
+  deltx: (id) => {
+    const t0 = state.transactions.find((t) => t.id === id); if (!t0) return;
+    const removed = state.transactions.map((t, i) => [i, t]).filter(([, t]) => t.id === id || (t0.transferId && t.transferId === t0.transferId));
+    state.transactions = state.transactions.filter((t) => !removed.some(([, r]) => r === t)); save(); render();
+    toast(removed.length > 1 ? 'Đã xóa lần chuyển ví' : 'Đã xóa giao dịch', { label: 'Hoàn tác', run: () => { for (const [i, t] of removed) state.transactions.splice(i, 0, t); save(); render(); } }); },
   editbudget: (id) => addBudget(state.budgets.find((b) => b.id === id)),
-  contrib250: (id) => { state.goals.find((g) => g.id === id).contributions.push({ amount: 250000, date: L.todayStr() }); save(); render(); toast('Đã góp 250.000 ₫'); },
+  contrib250: (id) => { contribute(id, 250000); },
+  contrib100: (id) => { contribute(id, 100000); },
+  editgoal: (id) => editGoal(id),
+  transfer: () => transferSheet(), editwallets: () => walletsSheet(), adddebt: () => debtSheet(),
+  gojars: () => { ui.tab = 'plan'; ui.plan = 'goals'; render(); window.scrollTo(0, 0); },
+  gorewards: () => go('rewards'),
+  toggledark: () => { state.darkMode = !state.darkMode; save(); render(); },
+  togglepremium: () => { state.isPremium = !state.isPremium; save(); render(); },
+  checkin: () => {
+    const today = L.todayStr(), r = L.computeCheckIn(state.lastCheckInDate, state.streakDays, today); if (!r) return;
+    state.streakDays = r.streakDays; state.lastCheckInDate = today; award(r.points, `Điểm danh ngày ${r.streakDays}`);
+    save(); render(); toast(`Điểm danh thành công! +${r.points} FinPoints`);
+    LB.claimCheckin().then(() => LB.refreshLeaderboard());
+  },
+  claimweek: () => {
+    const today = L.todayStr(), wk = L.currentWeekKey(today); if (state.weeklyBudgetBonusClaimedWeek === wk) return;
+    state.weeklyBudgetBonusClaimedWeek = wk; award(50, 'Thưởng giữ vững ngân sách tuần'); claimQueue.add('week'); save(); render(); toast('Nhận +50 FinPoints giữ vững ngân sách!');
+  },
+  redeem: (id) => {
+    const v = L.MAC_DINH_CHI_VOUCHERS.find((x) => x.id === id); if (!v || state.finPoints < v.costPoints) return;
+    const rv = { id: L.uid(), merchant: v.merchant, title: v.title, discountLabel: v.discountLabel, code: `FM-MDC-${Math.floor(1000 + Math.random() * 9000)}`, redeemedAt: L.todayStr(), used: false };
+    award(-v.costPoints, `Đổi ${v.discountLabel}`); state.redeemedVouchers.unshift(rv); save(); render(); qrSheet(rv);
+  },
+  openqr: (id) => { const rv = state.redeemedVouchers.find((x) => x.id === id); if (rv) qrSheet(rv); },
+  settledebt: (id) => {
+    const d = state.debts.find((x) => x.id === id); if (!d || d.settled) return; d.settled = true;
+    state.transactions.push({ id: L.uid(), type: d.direction === 'lend' ? 'income' : 'expense', amount: d.amount, categoryId: d.direction === 'lend' ? 'other-inc' : 'other-exp', walletId: d.walletId || 'cash', date: L.todayStr(), note: `Tất toán với ${d.personName}` });
+    save(); render(); toast(`Đã tất toán với ${d.personName}`);
+  },
+  deldebt: (id) => { const i = state.debts.findIndex((d) => d.id === id); if (i < 0) return; const [gone] = state.debts.splice(i, 1); save(); render();
+    toast('Đã xóa khoản nợ', { label: 'Hoàn tác', run: () => { state.debts.splice(i, 0, gone); save(); render(); } }); },
+  applyautobudget: (inc) => {
+    const before = JSON.parse(JSON.stringify(state.budgets)), p = L.generateAutoBudgetPlan(Number(inc) || 1_800_000);
+    for (const e of [{ categoryId: null, limit: p.totalLimit }, ...p.allocations.map((a) => ({ categoryId: a.categoryId, limit: a.limit }))]) {
+      const ex = state.budgets.find((b) => b.categoryId === e.categoryId); if (ex) ex.limit = e.limit; else state.budgets.push({ id: L.uid(), ...e });
+    }
+    save(); render(); toast('Đã áp dụng ngân sách AI', { label: 'Hoàn tác', run: () => { state.budgets = before; save(); render(); } });
+  },
+  banksync: () => {
+    const tpl = L.BANK_SYNC_FEED[state.transactions.filter((t) => t.source === 'bank-sync').length % L.BANK_SYNC_FEED.length], today = L.todayStr();
+    const alloc = addTxn({ ...tpl, id: L.uid(), date: today }); state.bankSync.lastSyncedAt = `${today} ${new Date().toTimeString().slice(0, 5)}`;
+    save(); render(); toast(`Đã đồng bộ giao dịch ${vnd(tpl.amount)}${alloc ? ` · tự trích ${vnd(alloc)} vào hũ` : ''}`);
+  },
+  loaddemo: () => { if (confirm('Thay TOÀN BỘ dữ liệu hiện tại bằng dữ liệu mẫu? Bạn nên sao lưu (JSON) trước.')) { const keep = { profile: state.profile, darkMode: state.darkMode }; state = { ...L.createSeedState(), ...keep }; ui.recent = []; save(); render(); toast('Đã nạp dữ liệu mẫu'); } },
   delbudget: (id) => { const i = state.budgets.findIndex((b) => b.id === id), [gone] = state.budgets.splice(i, 1); save(); render();
     toast('Đã xóa ngân sách', { label: 'Hoàn tác', run: () => { state.budgets.splice(i, 0, gone); save(); render(); } }); },
   delgoal: (id) => { if (confirm('Xóa mục tiêu này cùng các khoản đã góp?')) { state.goals = state.goals.filter((g) => g.id !== id); save(); render(); } },
@@ -326,14 +542,31 @@ const actions = {
   exportjson: () => download(`finmate-${L.todayStr()}.json`, JSON.stringify(state, null, 2), 'application/json'),
   exportcsv: () => download(`finmate-${L.todayStr()}.csv`, L.toCSV(state.transactions, state.categories), 'text/csv;charset=utf-8'),
   import: () => $('#file').click(),
-  wipe: () => { if (confirm('Xóa TOÀN BỘ dữ liệu trên đám mây? Bạn không thể hoàn tác.')) { state = L.emptyState(); ui.recent = []; save(); render(); toast('Đã xóa toàn bộ dữ liệu'); } },
+  wipe: () => { if (confirm('Xóa TOÀN BỘ dữ liệu trên đám mây? Bạn không thể hoàn tác.')) { { const dark = state.darkMode; state = L.emptyState(); state.darkMode = dark; } ui.recent = []; save(); render(); toast('Đã xóa toàn bộ dữ liệu'); } },
 };
 const go = (tab) => { ui.tab = tab; render(); window.scrollTo(0, 0); };
 document.addEventListener('click', (e) => {
   const a = e.target.closest('[data-act]'); if (a) return actions[a.dataset.act]?.(a.dataset.id);
   const p = e.target.closest('[data-plan]'); if (p) { ui.plan = p.dataset.plan; return render(); }
   const g = e.target.closest('[data-tab-go]'); if (g) return go(g.dataset.tabGo);
+  const w = e.target.closest('[data-wallet]'); if (w) { ui.walletFilter = w.dataset.wallet; return render(); }
+  const sc = e.target.closest('[data-scope]'); if (sc) { ui.boardScope = sc.dataset.scope; return render(); }
+  const rg = e.target.closest('[data-range]'); if (rg) { ui.trendRange = Number(rg.dataset.range); return render(); }
+  const pr = e.target.closest('[data-prompt]'); if (pr) return ask(pr.dataset.prompt);
   const t = e.target.closest('#nav [data-tab]'); if (t) go(t.dataset.tab);
+});
+function ask(text) {
+  const q = text.trim(); if (!q) return;
+  state.chatHistory.push({ id: L.uid(), role: 'user', text: q }, { id: L.uid(), role: 'assistant', text: L.answerAIChat(q, state, ui.month, L.todayStr()) });
+  state.chatHistory = state.chatHistory.slice(-40); save(); render();
+}
+document.addEventListener('submit', (e) => {
+  if (e.target.id === 'chatform') { e.preventDefault(); ask($('#chat-input').value); }
+  else if (e.target.id === 'profileform') {
+    e.preventDefault();
+    state.profile = { name: $('#pname').value.trim(), className: $('#pclass').value.trim().toUpperCase(), grade: Number($('#pgrade').value) || 10, school: $('#pschool').value.trim() || L.DEFAULT_PROFILE.school };
+    save(); render(); toast('Đã lưu hồ sơ');
+  }
 });
 $('#add').addEventListener('click', () => addTx());
 document.addEventListener('input', (e) => { if (e.target.id !== 'q') return; ui.q = e.target.value; $('#txlist').innerHTML = txListHtml(); $('#qhint').textContent = ui.q.trim() ? 'Đang tìm trong tất cả các tháng.' : ''; });
@@ -409,15 +642,7 @@ function showAuth(mode = 'login') {
 async function enter(acc, initialLegacyState = null) {
   account = acc;
 
-  ui = {
-    tab: 'home',
-    plan: 'budget',
-    q: '',
-    month: thisMonth(),
-    recent: [],
-    entered: false,
-    syncStatus: 'syncing',
-  };
+  ui = freshUi('syncing');
 
   try {
     // Keep an existing device cache temporarily for migration.
@@ -481,9 +706,11 @@ if (!cloud.exists && initialLegacyState) {
   }
 }
 async function leave() {
+  LB.resetLeaderboard(); claimQueue.clear(); triedGoals.clear();
   await cloudAuth.logout();
   account = null;
   state = L.emptyState();
+  applyTheme();
   if (dlg.open) dlg.close();
   $('#toast').hidden = true;
   $('#view').innerHTML = '';

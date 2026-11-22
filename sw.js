@@ -1,5 +1,5 @@
-const CACHE = 'finmate-v3';
-const ASSETS = ['./', './index.html', './styles.css', './app.js', './auth.js', './logic.js', './icon.svg', './manifest.json'];
+const CACHE = 'finmate-v5';
+const ASSETS = ['./', './index.html', './styles.css', './app.js', './auth.js', './logic.js', './leaderboard.js', './leaderboard-logic.js', './icon.svg', './manifest.json'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
