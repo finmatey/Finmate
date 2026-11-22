@@ -416,3 +416,16 @@ html.dark .lb-badge{color:#F7E7A8}
 .hero-toggle{display:flex;gap:4px;padding:4px;margin:0 0 6px;border-radius:99px;background:var(--surface);border:1px solid var(--line)}
 .hero-toggle button{flex:1;border:0;background:transparent;color:var(--primary);font:inherit;font-size:.84rem;font-weight:700;padding:8px 10px;min-height:40px;border-radius:99px;cursor:pointer}
 .hero-toggle button[aria-pressed=true]{background:var(--tertiary);color:#183C35}
+
+/* ---------- low balance pop-up ---------- */
+#warn{width:calc(100% - 32px);max-width:380px;margin:auto;padding:0;border:1px solid var(--err);border-radius:var(--r-2xl)}
+#warn[open]{animation:warn-in .2s ease-out}
+#warn::backdrop{background:rgba(60,15,15,.55)}
+.warn-box{padding:24px 22px 22px;animation:warn-shake .5s .15s both}
+.warn-box h2{margin:0 0 12px;font-size:1.25rem;font-weight:800;letter-spacing:-.02em;color:var(--err)}
+.warn-msg{margin:0 0 18px;padding:14px 16px;background:rgba(217,93,93,.12);border:1px solid rgba(217,93,93,.55);border-radius:var(--r-lg);line-height:1.5;color:var(--ink)}
+.warn-btn{width:100%;min-height:50px;background:#C93C3C;border-color:#C93C3C;color:#fff;font-weight:800}
+.warn-btn:hover{background:#B03030;border-color:#B03030}
+@keyframes warn-in{from{opacity:0;transform:scale(.96)}}
+@keyframes warn-shake{0%,100%{transform:translateX(0)}15%{transform:translateX(-7px)}30%{transform:translateX(6px)}45%{transform:translateX(-5px)}60%{transform:translateX(4px)}75%{transform:translateX(-2px)}}
+@media (prefers-reduced-motion:reduce){.warn-box{animation:none}#warn[open]{animation:none}}

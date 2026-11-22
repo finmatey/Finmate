@@ -79,7 +79,7 @@ function contribute(id, amount) {
   const g = state.goals.find((x) => x.id === id); if (!g) return null;
   const was = L.goalPct(g) >= 100; g.contributions.push({ amount, date: L.todayStr() });
   const done = !was && L.goalPct(g) >= 100; if (done) { goalQueue.add(g.id); triedGoals.add(g.id); }
-  save(); render(); toast(done ? `Hoàn thành "${g.name}"! +50 FinPoints` : `Đã góp ${vnd(amount)}`); return g;
+  save(); render(); toast(done ? `Hoàn thành "${g.name}"! 🎉` : `Đã góp ${vnd(amount)}`); return g;
 }
 const monthLabel = (m) => `Tháng ${Number(m.slice(5))}/${m.slice(0, 4)}`;
 const vnd = L.formatVND;
@@ -157,7 +157,7 @@ function home() {
   if (ui.heroView === 'balance') {
     const st = L.lowBalanceStatus(state.wallets, state.transactions);
     label = 'Số dư còn lại (tất cả ví)'; num = (st.current < 0 ? '−' : '') + vnd(Math.abs(st.current)); numCls = st.low ? 'over' : '';
-    sub = st.initial > 0 ? `Số dư ban đầu: ${vnd(st.initial)} · còn ${st.pct < 0 ? 'âm' : st.pct + '%'}` : 'Nhập "Số dư đầu" ở tab Giao dịch để theo dõi phần trăm còn lại.';
+    sub = st.initial > 0 ? `Số dư ban đầu: ${vnd(st.initial)} · còn ${st.pct}%` : 'Nhập "Số dư đầu" ở tab Giao dịch để theo dõi phần trăm còn lại.';
   } else if (overall) {
     const remaining = overall.limit - s.expense, over = remaining < 0;
     label = over ? 'Bạn đã vượt ngân sách' : 'Ngân sách còn lại'; num = (over ? '−' : '') + vnd(Math.abs(remaining)); numCls = over ? 'over' : '';
@@ -212,10 +212,24 @@ function txListHtml() {
     const net = items.reduce((a, t) => a + (t.type === 'income' ? t.amount : -t.amount), 0);
     return `<div class="day"><span>${q ? d.split('-').reverse().join('/') : dayLabel(d)}</span><span class="num">${net > 0 ? '+' : net < 0 ? '−' : ''}${vnd(Math.abs(net))}</span></div>${items.map(txRow).join('')}`; }).join('')}</div>`;
 }
+const warnDlg = document.body.appendChild(Object.assign(document.createElement('dialog'), { id: 'warn' }));
+// Pop-up warning (below 20% of the starting balance). Returns true if it was shown; onClose runs after "Đã hiểu".
+function showLowBalanceWarning(onClose) {
+  const st = L.lowBalanceStatus(state.wallets, state.transactions);
+  if (!st.low) return false;
+  const msg = st.current < 0
+    ? `Số dư của bạn đang âm (<b>−${vnd(Math.abs(st.current))}</b>), thấp hơn 20% so với số dư ban đầu ${vnd(st.initial)}.`
+    : `Số dư của bạn chỉ còn <b>${vnd(st.current)}</b> (${st.pct}% so với số dư ban đầu ${vnd(st.initial)}), thấp hơn 20%.`;
+  warnDlg.innerHTML = `<div class="warn-box" role="alertdialog" aria-labelledby="warn-t" aria-describedby="warn-m"><h2 id="warn-t">⚠️ Cảnh báo số dư thấp</h2><p id="warn-m" class="warn-msg">${msg} Hãy cân nhắc giảm chi tiêu và chỉ chi cho những khoản thật sự cần thiết.</p><button type="button" class="btn warn-btn" data-warn-ok>Đã hiểu</button></div>`;
+  warnDlg.onclose = () => { warnDlg.onclose = null; onClose?.(); };
+  warnDlg.querySelector('[data-warn-ok]').onclick = () => warnDlg.close();
+  if (!warnDlg.open) warnDlg.showModal();
+  return true;
+}
 function lowBalanceBanner() {
   const st = L.lowBalanceStatus(state.wallets, state.transactions);
   if (!st.low && !st.lowWallets.length) return '';
-  const head = st.low ? `Số dư chỉ còn <b class="num">${vnd(st.current)}</b> (${st.pct < 0 ? 'âm' : st.pct + '%'} so với số dư ban đầu ${vnd(st.initial)}). Hãy cân nhắc giảm chi tiêu.` : '';
+  const head = st.low ? `Số dư chỉ còn <b class="num">${vnd(st.current)}</b> (${st.pct}% so với số dư ban đầu ${vnd(st.initial)}). Hãy cân nhắc giảm chi tiêu.` : '';
   const wl = st.lowWallets.length ? `<div class="lowbal-w">Ví sắp hết: ${st.lowWallets.map((w) => `${esc(w.name)} (${vnd(w.balance)})`).join(', ')}</div>` : '';
   return `<div class="lowbal" role="alert"><span aria-hidden="true">⚠️</span><div>${head}${wl}</div></div>`;
 }
@@ -348,7 +362,8 @@ function wireMoney(name) {
 }
 const need = (v) => { const n = L.parseAmount(v); if (!(n > 0)) { toast('Nhập số tiền lớn hơn 0.'); return null; } return n; };
 
-function addTx(pre) {
+function addTx(pre, skipWarn) {
+  if (!skipWarn && showLowBalanceWarning(() => addTx(pre, true))) return;
   let walletId = state.wallets.some((w) => w.id === ui.lastWallet) ? ui.lastWallet : state.wallets[0].id;
   let type = 'expense', catId = (typeof pre === 'string' && pre) || ui.recent.find((id) => cat(id).type === 'expense') || 'food';
   sheet('Thêm giao dịch', `<div class="seg type" data-type="expense" id="types"><button type="button" data-type="expense">Chi</button><button type="button" data-type="income">Thu</button></div>
@@ -359,9 +374,11 @@ function addTx(pre) {
     <label for="note">Ghi chú (không bắt buộc)</label><input id="note" name="note" maxlength="80" placeholder="VD: trà sữa với bạn">`, 'Lưu giao dịch', (fd) => {
     const amount = need(fd.get('amount')); if (!amount) return false;
     const date = fd.get('date') || L.todayStr();
+    const wasLow = L.lowBalanceStatus(state.wallets, state.transactions).low;
     const alloc = addTxn({ id: L.uid(), type, amount, categoryId: catId, walletId, date, note: fd.get('note').trim() });
     ui.lastWallet = walletId; pushRecent(catId); ui.month = L.monthKey(date); save(); render();
     toast(alloc ? `Đã lưu · tự trích ${vnd(alloc)} vào hũ tiết kiệm` : 'Đã lưu giao dịch');
+    if (!wasLow) showLowBalanceWarning(); // this transaction just pushed the balance below 20%
   });
   const amountEl = wireMoney('amount');
   const draw = () => {
@@ -655,6 +672,7 @@ if (!cloud.exists && initialLegacyState) {
 
     render();
     window.scrollTo(0, 0);
+    showLowBalanceWarning();
 
   } catch (e) {
     console.error('Cloud loading failed:', e);
